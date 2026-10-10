@@ -33,7 +33,11 @@ from typing import Any, Optional, Sequence
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from ...class_catalog import CLASS_LABELS, CLASS_SHORT_LABELS
+from ...class_catalog import (
+    ACTIVE_CLASS_KEYS,
+    CLASS_LABELS,
+    CLASS_SHORT_LABELS,
+)
 from ...database.repository import ClassSlot, LessonPaymentHistoryItem, UserBooking
 from ...payments import LessonPackage, PURCHASE_PACKAGES
 from ...presentation import (
@@ -51,7 +55,13 @@ from ...services.profile import upcoming_bookings
 logger = logging.getLogger("bot.handlers.screens")
 
 MAX_SLOTS_ON_SCREEN = 10
-SLOT_FILTERS = ("all", *CLASS_LABELS)
+
+
+def is_slot_filter(key: str) -> bool:
+    """«all» или действующее направление (каталог в базе, миграция 017)."""
+    return key == "all" or key in ACTIVE_CLASS_KEYS
+
+
 BACK = "⬅️ Назад"
 BOOK_BUTTON = "📅 Записаться"
 MY_CLASSES_BUTTON = "💃 Мои занятия"
@@ -128,21 +138,28 @@ async def find_slot(repository: Any, slot_id: int) -> Optional[ClassSlot]:
     return None
 
 
+def waitlist_button_text(slot: ClassSlot) -> str:
+    return "🔔 {} · {} · мест нет".format(
+        format_class_time(slot.starts_at), CLASS_SHORT_LABELS[slot.class_key]
+    )
+
+
 async def slots_screen(
     repository: Any,
     telegram_id: int,
     filter_key: str = "all",
     notice: str = "",
 ) -> tuple[str, InlineKeyboardMarkup]:
-    if filter_key == "all":
-        slots = [
-            slot
-            for slot in await repository.list_class_slots(limit=50)
-            if is_bookable(slot)
-        ]
-    else:
-        slots = list(await repository.list_available_class_slots(filter_key))
-    slots = slots[:MAX_SLOTS_ON_SCREEN]
+    # Открытые занятия: со свободными местами — запись, заполненные — лист
+    # ожидания (миграция 019).
+    slots = [
+        slot
+        for slot in await repository.list_class_slots(
+            class_key=None if filter_key == "all" else filter_key, limit=50
+        )
+        if slot.status == "open"
+    ][:MAX_SLOTS_ON_SCREEN]
+    bookable = [slot for slot in slots if is_bookable(slot)]
     credits = await repository.get_lesson_credits(telegram_id)
 
     title = "Ближайшие занятия"
@@ -150,13 +167,18 @@ async def slots_screen(
         title += " — {}".format(CLASS_LABELS[filter_key])
     lines = [notice] if notice else []
     lines.append(title)
-    if slots:
+    if bookable:
         lines.append(
             "Выберите занятие, чтобы записаться. {}.".format(balance_line(credits))
         )
         if credits == 0:
             lines.append("Если баланса не хватит, бот предложит абонемент.")
-    else:
+    if len(bookable) < len(slots):
+        lines.append(
+            "🔔 — мест нет: встаньте в лист ожидания, и мы напишем, когда место "
+            "освободится."
+        )
+    if not slots:
         lines.append(
             "Сейчас свободных занятий{} нет. Загляните позже или напишите нам "
             "в «💬 Поддержка».".format(
@@ -169,12 +191,17 @@ async def slots_screen(
         prefix = "✓ " if key == filter_key else ""
         return button(prefix + label, "slots:{}".format(key))
 
+    keys = ["all", *ACTIVE_CLASS_KEYS]
     rows = [
-        [filter_button("all"), filter_button("beginner")],
-        [filter_button("intermediate"), filter_button("individual")],
+        [filter_button(key) for key in keys[index : index + 2]]
+        for index in range(0, len(keys), 2)
     ]
     rows.extend(
-        [button(slot_button_text(slot), "book:{}:{}".format(slot.class_key, slot.id))]
+        [
+            button(slot_button_text(slot), "book:{}:{}".format(slot.class_key, slot.id))
+            if is_bookable(slot)
+            else button(waitlist_button_text(slot), "wl:{}".format(slot.id))
+        ]
         for slot in slots
     )
     rows.append([button(MY_CLASSES_BUTTON, "my"), button(ABOUT_BUTTON, "about")])
@@ -206,12 +233,35 @@ async def my_classes_screen(
         await repository.list_bookings_for_telegram_id(telegram_id)
     )
     credits = await repository.get_lesson_credits(telegram_id)
+    waitlist = await repository.list_user_waitlist(telegram_id)
     lines = [notice, ""] if notice else []
     lines.extend(["Мои занятия", balance_line(credits) + "."])
     history_row = [button("📚 История занятий", "hist:c:0")]
+    waitlist_rows = [
+        [
+            button(
+                "Выйти из очереди: {} · {}".format(
+                    format_class_time(entry.slot.starts_at),
+                    CLASS_SHORT_LABELS[entry.slot.class_key],
+                ),
+                "wlx:{}".format(entry.slot.id),
+            )
+        ]
+        for entry in waitlist
+    ]
+    if waitlist:
+        lines.extend(["", "🔔 Лист ожидания:"])
+        lines.extend(
+            "• {} — {}".format(
+                format_class_time(entry.slot.starts_at),
+                CLASS_LABELS[entry.slot.class_key],
+            )
+            for entry in waitlist
+        )
     if not upcoming:
         lines.extend(["", "Предстоящих занятий пока нет."])
         return "\n".join(lines), markup(
+            *waitlist_rows,
             [button(BOOK_BUTTON, "slots:all")],
             [button("💳 Купить абонемент", "packs:0")],
             history_row,
@@ -240,6 +290,7 @@ async def my_classes_screen(
         for booking in upcoming
         if booking.can_cancel()
     ]
+    rows.extend(waitlist_rows)
     rows.append([button(BOOK_BUTTON, "slots:all")])
     rows.append(history_row)
     return "\n".join(lines), markup(*rows)

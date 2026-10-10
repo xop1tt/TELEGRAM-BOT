@@ -34,7 +34,7 @@ from ...presentation import (
 from ...services import AdminNotifier, BookingService
 from .screens import (
     BOOK_BUTTON,
-    SLOT_FILTERS,
+    is_slot_filter,
     button,
     find_slot,
     markup,
@@ -46,6 +46,7 @@ from .screens import (
     upcoming_bookings,
 )
 from ...studio_rules import rules
+from ...database.waitlist_postgres import AlreadyBookedError
 
 
 logger = logging.getLogger("bot.handlers.lessons")
@@ -68,7 +69,7 @@ async def show_slots(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
     filter_key = (callback.data or "").split(":", 1)[1]
-    if filter_key not in SLOT_FILTERS:
+    if not is_slot_filter(filter_key):
         filter_key = "all"
     # Переход в другой сценарий — незавершённый ввод текста не должен
     # «поймать» следующее сообщение пользователя.
@@ -128,7 +129,8 @@ async def book_class_slot(
         booking = await booking_service.book(slot_id, sender.id)
     except SlotUnavailableError:
         await callback.answer(
-            "На это занятие уже нет свободных мест или запись закрыта.",
+            "На это занятие уже нет свободных мест или запись закрыта. На "
+            "заполненное занятие можно встать в лист ожидания (🔔).",
             show_alert=True,
         )
         text, reply_markup = await slots_screen(
@@ -190,6 +192,75 @@ async def book_class_slot(
     await show(callback, "\n".join(lines), markup(*rows))
     if not booking.already_booked:
         await booking_service.notify_admins_about_booking(booking, sender.full_name)
+
+
+# ---------- Лист ожидания ----------
+
+
+@router.callback_query(F.data.startswith("wl:"))
+async def join_waitlist(callback: CallbackQuery, repository: Any) -> None:
+    """Встать в лист ожидания на заполненное занятие (или показать место в
+    очереди, если уже стоит)."""
+    slot_id = parse_int((callback.data or "").split(":", 1)[1])
+    if slot_id is None:
+        await callback.answer("Некорректное занятие.", show_alert=True)
+        return
+    await ensure_callback_profile(callback, repository)
+    telegram_id = callback.from_user.id
+    already = slot_id in await repository.user_waitlisted_slot_ids(telegram_id)
+    try:
+        entry = await BookingService(
+            repository, AdminNotifier(callback.bot, repository)
+        ).join_waitlist(slot_id, telegram_id)
+    except InsufficientLessonCreditsError:
+        await callback.answer()
+        text, reply_markup = await packages_view(
+            repository,
+            telegram_id,
+            notice=(
+                "В лист ожидания можно встать с занятием на балансе. Выберите "
+                "абонемент — после оплаты вернитесь к расписанию."
+            ),
+        )
+        await show(callback, text, reply_markup)
+        return
+    except AlreadyBookedError as error:
+        await callback.answer(str(error), show_alert=True)
+        return
+    except SlotUnavailableError as error:
+        await callback.answer(str(error), show_alert=True)
+        text, reply_markup = await slots_screen(
+            repository, telegram_id, notice="Список занятий обновлён."
+        )
+        await show(callback, text, reply_markup)
+        return
+    await callback.answer("Вы в листе ожидания" if not already else "Вы уже в очереди")
+    await show(
+        callback,
+        "🔔 Лист ожидания\n\n{}\n{}\n\nВ очереди: {}. Когда место освободится, "
+        "мы пришлём сообщение — запишется тот, кто успеет первым. Занятие "
+        "спишется только при записи.".format(
+            CLASS_LABELS[entry.slot.class_key],
+            format_class_time(entry.slot.starts_at),
+            entry.queue_size,
+        ),
+        markup(
+            [button("Выйти из очереди", "wlx:{}".format(slot_id))],
+            [button("💃 Мои занятия", "my"), button("⬅️ К расписанию", "slots:all")],
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("wlx:"))
+async def leave_waitlist(callback: CallbackQuery, repository: Any) -> None:
+    slot_id = parse_int((callback.data or "").split(":", 1)[1])
+    if slot_id is None:
+        await callback.answer("Некорректное занятие.", show_alert=True)
+        return
+    left = await repository.leave_waitlist(slot_id, callback.from_user.id)
+    await callback.answer("Вы вышли из очереди" if left else "Вас нет в этой очереди")
+    text, reply_markup = await my_classes_screen(repository, callback.from_user.id)
+    await show(callback, text, reply_markup)
 
 
 # ---------- Мои занятия ----------

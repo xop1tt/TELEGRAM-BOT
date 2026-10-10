@@ -15,9 +15,17 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 
 from ...config import Config
-from ...database.repository import InsufficientLessonCreditsError
+from ...database.repository import (
+    BookingCooldownError,
+    BookingNotFoundError,
+    CancellationWindowExpiredError,
+    InsufficientLessonCreditsError,
+    SlotUnavailableError,
+)
 from ...database.studio_models import PackageGrantNotFoundError
 from ...services import (
+    AdminNotifier,
+    BookingService,
     CreditService,
     HistoryService,
     InvalidUserNameError,
@@ -48,6 +56,8 @@ from ..schemas import (
     AdminRefundRequest,
     AdminRevokeRequest,
     BookingHistoryPage,
+    BookingRequest,
+    BookingResponse,
     PackageSummaryResponse,
     ProfileResponse,
     SupportTicketResponse,
@@ -255,6 +265,70 @@ async def adjust_credits(
             status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)
         ) from error
     return AdminOperationResultResponse(applied=result.applied, balance=result.balance)
+
+
+# ---------- запись за участника ----------
+
+
+@router.post(
+    "/clients/{telegram_id}/bookings",
+    response_model=BookingResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def book_for_client(
+    payload: BookingRequest,
+    request: Request,
+    telegram_id: int = _db_id(),
+    admin_id: int = Depends(require_admin_actor),
+    repository: Any = Depends(get_repository),
+) -> BookingResponse:
+    """Запись участника администратором — по тем же правилам, что
+    самозапись; с баланса списывается занятие, участник получает
+    уведомление."""
+    await _profile_or_404(repository, telegram_id)
+    service = BookingService(
+        repository, AdminNotifier(request.app.state.bot, repository)
+    )
+    try:
+        booking = await service.admin_book(payload.slot_id, telegram_id, admin_id)
+    except (
+        SlotUnavailableError,
+        InsufficientLessonCreditsError,
+        BookingCooldownError,
+    ) as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    return BookingResponse.from_booking(booking)
+
+
+@router.post(
+    "/clients/{telegram_id}/bookings/{slot_id}/cancel",
+    response_model=AdminOperationResultResponse,
+)
+async def cancel_for_client(
+    request: Request,
+    telegram_id: int = _db_id(),
+    slot_id: int = _db_id(),
+    admin_id: int = Depends(require_admin_actor),
+    repository: Any = Depends(get_repository),
+) -> AdminOperationResultResponse:
+    """Отмена записи администратором: занятие возвращается всегда, даже
+    позже окна отмены (но до начала занятия)."""
+    service = BookingService(
+        repository, AdminNotifier(request.app.state.bot, repository)
+    )
+    try:
+        cancelled = await service.admin_cancel(slot_id, telegram_id, admin_id)
+    except BookingNotFoundError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+    except CancellationWindowExpiredError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    return AdminOperationResultResponse(
+        applied=cancelled,
+        balance=await repository.get_lesson_credits(telegram_id),
+        message="Запись отменена, занятие вернулось на баланс"
+        if cancelled
+        else "Запись уже была отменена",
+    )
 
 
 # ---------- платежи ----------

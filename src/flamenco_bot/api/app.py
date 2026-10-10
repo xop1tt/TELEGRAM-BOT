@@ -38,6 +38,7 @@ from .metrics import ProcessMetrics, RequestMetrics
 from .routers.admin import router as admin_router
 from .routers.admin import staff_router as admin_staff_router
 from .routers.admin_clients import router as admin_clients_router
+from .routers.waitlist import router as waitlist_router
 from .routers.auth import router as auth_router
 from .routers.bookings import router as bookings_router
 from .routers.classes import router as classes_router
@@ -201,6 +202,7 @@ def create_app() -> FastAPI:
     app.include_router(classes_router)
     app.include_router(packages_router)
     app.include_router(bookings_router)
+    app.include_router(waitlist_router)
     app.include_router(support_router)
     app.include_router(users_router)
     app.include_router(payments_router)

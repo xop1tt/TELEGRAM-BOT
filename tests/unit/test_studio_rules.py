@@ -200,6 +200,12 @@ class NotificationTextTests(unittest.TestCase):
                 "lessons": 2,
                 "expires_at": "2026-10-20T16:00:00+00:00",
             },
+            "waitlist_seat": {
+                "class_key": "beginner",
+                "slot_id": 5,
+                "starts_at": "2026-10-08T16:00:00+00:00",
+                "remaining": 1,
+            },
             "credits_expired": {
                 "title": "Абонемент на 4 занятия",
                 "lessons": 2,

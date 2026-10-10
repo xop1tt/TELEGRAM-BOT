@@ -5,7 +5,7 @@
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Annotated, Any, List, Literal, Mapping, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -177,6 +177,41 @@ class LessonPackageResponse(BaseModel):
 
 class BookingRequest(BaseModel):
     slot_id: DbId
+
+
+class WaitlistEntryResponse(BaseModel):
+    slot: ClassSlotResponse
+    joined_at: datetime
+    queue_size: int
+
+    @classmethod
+    def from_entry(cls, entry: Any) -> "WaitlistEntryResponse":
+        return cls(
+            slot=ClassSlotResponse.from_record(entry.slot),
+            joined_at=entry.joined_at,
+            queue_size=entry.queue_size,
+        )
+
+
+class AdminWaitlistMemberResponse(BaseModel):
+    telegram_id: int
+    user_name: str
+    phone: Optional[str]
+    joined_at: datetime
+
+
+class AdminSeriesRequest(BaseModel):
+    class_key: str = Field(min_length=1, max_length=32)
+    starts_at: datetime
+    capacity: int = Field(ge=1, le=100)
+    teacher_telegram_id: Optional[int] = Field(default=None, gt=0, le=MAX_DB_ID)
+    weeks: int = Field(ge=1, le=12)
+
+
+class AdminCopyWeekRequest(BaseModel):
+    # Любой день недели-источника (по часам студии); берётся её понедельник.
+    week_start: date
+    weeks: int = Field(ge=1, le=12)
 
 
 class CreditSourceResponse(BaseModel):
@@ -757,6 +792,11 @@ class AdminSlotResponse(ClassSlotResponse):
             booked=slot.booked_count,
             teacher_telegram_id=slot.teacher_telegram_id,
         )
+
+
+class AdminSlotsCreatedResponse(BaseModel):
+    created: List[AdminSlotResponse]
+    skipped: int
 
 
 class AdminCreateSlotRequest(BaseModel):

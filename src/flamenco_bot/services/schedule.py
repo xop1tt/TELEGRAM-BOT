@@ -8,11 +8,13 @@
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Sequence
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Optional, Sequence, Tuple
 
 from ..class_catalog import ACTIVE_CLASS_KEYS
+from ..config import Config
 from ..database.repository import ClassSlot
+from ..studio_time import to_studio_time
 from ..database.studio_models import (
     SlotCancellation,
     SlotEvent,
@@ -26,6 +28,16 @@ logger = logging.getLogger("bot.services.schedule")
 # Админ-расписание показывает и начавшиеся сегодня занятия — чтобы открыть
 # список участников идущего занятия.
 ADMIN_SCHEDULE_LOOKBACK = timedelta(hours=12)
+
+
+MAX_SERIES_WEEKS = 12
+
+
+def _shift_weeks(local: datetime, weeks: int) -> datetime:
+    """То же время по часам студии через ``weeks`` недель (с учётом смены
+    летнего времени)."""
+    naive = local.replace(tzinfo=None) + timedelta(weeks=weeks)
+    return naive.replace(tzinfo=Config.STUDIO_TIMEZONE)
 
 
 class ScheduleService:
@@ -64,6 +76,84 @@ class ScheduleService:
             teacher_telegram_id=teacher_telegram_id,
             newest_first=True,
         )
+
+    async def create_series(
+        self,
+        class_key: str,
+        starts_at: datetime,
+        capacity: int,
+        admin_telegram_id: int,
+        weeks: int,
+        teacher_telegram_id: Optional[int] = None,
+    ) -> Tuple[Sequence[ClassSlot], int]:
+        """Занятие и его повторы раз в неделю (всего ``weeks``, 1–12).
+
+        Повторы — в то же время по часам студии (переход на летнее время не
+        сдвигает занятие). Дальше занятия независимы.
+        """
+        if not 1 <= weeks <= MAX_SERIES_WEEKS:
+            raise ValueError("Повторов — от 1 до {} недель".format(MAX_SERIES_WEEKS))
+        if class_key not in ACTIVE_CLASS_KEYS:
+            raise ValueError("Неизвестный или скрытый формат занятия")
+        local = to_studio_time(starts_at)
+        items = [
+            (
+                class_key,
+                _shift_weeks(local, week),
+                capacity,
+                teacher_telegram_id,
+            )
+            for week in range(weeks)
+        ]
+        return await self.repository.create_class_slots(items, admin_telegram_id)
+
+    async def copy_week(
+        self,
+        week_start: date,
+        weeks: int,
+        admin_telegram_id: int,
+    ) -> Tuple[Sequence[ClassSlot], int]:
+        """Копирует неотменённые занятия недели (с понедельника ``week_start``
+        по часам студии) на следующие ``weeks`` недель — с теми же
+        преподавателями и вместимостью. Уже существующие и прошедшие —
+        пропускаются (их число — во втором значении)."""
+        if not 1 <= weeks <= MAX_SERIES_WEEKS:
+            raise ValueError("Копировать можно на 1–{} недель".format(MAX_SERIES_WEEKS))
+        monday = week_start - timedelta(days=week_start.weekday())
+        start = datetime.combine(monday, time.min, tzinfo=Config.STUDIO_TIMEZONE)
+        source = [
+            slot
+            for slot in await self.repository.list_class_slots(
+                limit=100,
+                include_cancelled=False,
+                starts_after=start - timedelta(seconds=1),
+                starts_before=start + timedelta(days=7),
+            )
+            if slot.status != "cancelled"
+        ]
+        if not source:
+            raise LookupError("На этой неделе нет занятий для копирования")
+        now = datetime.now(timezone.utc)
+        items = []
+        past = 0
+        for week in range(1, weeks + 1):
+            for slot in source:
+                moved = _shift_weeks(to_studio_time(slot.starts_at), week)
+                if moved <= now:
+                    past += 1
+                    continue
+                if slot.class_key not in ACTIVE_CLASS_KEYS:
+                    past += 1
+                    continue
+                items.append(
+                    (slot.class_key, moved, slot.capacity, slot.teacher_telegram_id)
+                )
+        if not items:
+            return [], past
+        created, skipped = await self.repository.create_class_slots(
+            items, admin_telegram_id
+        )
+        return created, skipped + past
 
     async def get(self, slot_id: int) -> Optional[ClassSlot]:
         return await self.repository.get_class_slot(slot_id)

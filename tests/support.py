@@ -145,6 +145,8 @@ class FakeRepository:
         self.list_bookings_for_telegram_id = AsyncMock(return_value=[])
         self.list_admin_ids = AsyncMock(return_value=[])
         self.list_staff = AsyncMock(return_value=[])
+        self.list_user_waitlist = AsyncMock(return_value=[])
+        self.user_waitlisted_slot_ids = AsyncMock(return_value=[])
         # Каталог: пустые выборки — кэш остаётся с начальными значениями.
         self.list_class_formats = AsyncMock(return_value=[])
         self.list_lesson_packages = AsyncMock(return_value=[])

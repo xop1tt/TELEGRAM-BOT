@@ -24,7 +24,7 @@ logger = logging.getLogger("bot.database")
 # Схему создают и меняют миграции репозитория базы данных (DATABASE,
 # migrate.py); бот и API только проверяют при старте, что она не старее
 # нужной этому коду. Повышайте вместе с кодом, которому нужна новая миграция.
-REQUIRED_SCHEMA_VERSION = "018"
+REQUIRED_SCHEMA_VERSION = "019"
 MAX_SUPPORT_MESSAGE_LENGTH = 2000
 # Бизнес-правила бронирования слотов, подтверждённые владельцем продукта:
 # - запись стоит 1 lesson_credit, отмена возвращает его;
@@ -585,6 +585,7 @@ from .studio_postgres import PostgresStudioMixin  # noqa: E402
 from .admin_queries import PostgresAdminMixin  # noqa: E402
 from .staff_postgres import PostgresStaffMixin  # noqa: E402
 from .catalog_postgres import PostgresCatalogMixin  # noqa: E402
+from .waitlist_postgres import PostgresWaitlistMixin, notify_waitlist  # noqa: E402
 
 
 class PostgresRepository(
@@ -592,6 +593,7 @@ class PostgresRepository(
     PostgresAdminMixin,
     PostgresStaffMixin,
     PostgresCatalogMixin,
+    PostgresWaitlistMixin,
 ):
     def __init__(self, pool: Any) -> None:
         self._pool = pool
@@ -1881,6 +1883,83 @@ class PostgresRepository(
         logger.info("Created class slot id=%s class=%s", record["id"], class_key)
         return ClassSlot.from_record(record)
 
+    async def create_class_slots(
+        self,
+        items: Sequence[Tuple[str, datetime, int, Optional[int]]],
+        admin_telegram_id: int,
+    ) -> Tuple[Sequence[ClassSlot], int]:
+        """Несколько занятий одной транзакцией (серия, копия недели).
+
+        ``items`` — (направление, начало, вместимость, преподаватель).
+        Занятие, у которого в это же время уже есть неотменённое занятие
+        того же направления, пропускается — повторное копирование не
+        создаёт дублей. Возвращает (созданные, пропущено).
+        """
+        for class_key, starts_at, capacity, _ in items:
+            _validate_slot(class_key, starts_at, capacity)
+        created = []
+        skipped = 0
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                for class_key, starts_at, capacity, teacher_id in items:
+                    if await connection.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM lesson_slots "
+                        "WHERE class_key = $1 AND starts_at = $2 "
+                        "AND status <> 'cancelled')",
+                        class_key,
+                        starts_at,
+                    ):
+                        skipped += 1
+                        continue
+                    if teacher_id is not None and not await connection.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM staff_members "
+                        "WHERE telegram_id = $1)",
+                        teacher_id,
+                    ):
+                        teacher_id = None
+                    slot_id = await connection.fetchval(
+                        """
+                        INSERT INTO lesson_slots (
+                            class_key, starts_at, capacity, created_by,
+                            teacher_telegram_id
+                        )
+                        VALUES ($1, $2, $3, $4, $5)
+                        RETURNING id
+                        """,
+                        class_key,
+                        starts_at,
+                        capacity,
+                        admin_telegram_id,
+                        teacher_id,
+                    )
+                    await connection.execute(
+                        """
+                        INSERT INTO lesson_slot_events (
+                            slot_id, event_type, actor_telegram_id, new_starts_at,
+                            new_capacity
+                        )
+                        VALUES ($1, 'created', $2, $3, $4)
+                        """,
+                        slot_id,
+                        admin_telegram_id,
+                        starts_at,
+                        capacity,
+                    )
+                    created.append(
+                        ClassSlot.from_record(
+                            await connection.fetchrow(
+                                SLOT_SELECT + "WHERE slot.id = $1", slot_id
+                            )
+                        )
+                    )
+        logger.info(
+            "Created class slots count=%s skipped=%s admin_id=%s",
+            len(created),
+            skipped,
+            admin_telegram_id,
+        )
+        return created, skipped
+
     async def list_class_slots(
         self,
         class_key: Optional[str] = None,
@@ -2050,6 +2129,12 @@ class PostgresRepository(
                 )
                 if booking is None:
                     raise SlotUnavailableError("Не удалось подтвердить место")
+                await connection.execute(
+                    "DELETE FROM lesson_waitlist "
+                    "WHERE slot_id = $1 AND telegram_id = $2",
+                    slot_id,
+                    telegram_id,
+                )
 
                 # Списание после вставки брони: ключу ledger нужен её id. При
                 # нехватке занятий исключение откатывает всю транзакцию,
@@ -2117,12 +2202,18 @@ class PostgresRepository(
         slot_id: int,
         telegram_id: int,
         notify_user: bool = False,
+        admin_telegram_id: Optional[int] = None,
     ) -> bool:
         """Отменяет подтверждённую запись и возвращает потраченный кредит.
 
         Идемпотентна: повторный вызов для уже отменённой записи возвращает
         ``False`` без повторного начисления кредита. Занятие возвращается в
         тот же абонемент, с которого было списано.
+
+        ``admin_telegram_id`` — отмена администратором за участника: окно
+        отмены не действует (решение владельца студии), а если срок
+        абонемента уже вышел, занятие возвращается бессрочным — как при
+        отмене студией. До начала занятия — в любом случае.
         """
         async with self._pool.acquire() as connection:
             async with connection.transaction():
@@ -2150,12 +2241,17 @@ class PostgresRepository(
                 if booking["status"] != "confirmed":
                     return False
 
-                check_cancellation_window(
-                    slot["starts_at"],
-                    booking["booked_at"],
-                    slot["rescheduled_at"],
-                    window=(await _booking_rules(connection)).cancellation_deadline,
-                )
+                if admin_telegram_id is None:
+                    check_cancellation_window(
+                        slot["starts_at"],
+                        booking["booked_at"],
+                        slot["rescheduled_at"],
+                        window=(await _booking_rules(connection)).cancellation_deadline,
+                    )
+                elif slot["starts_at"] <= datetime.now(timezone.utc):
+                    raise CancellationWindowExpiredError(
+                        "Занятие уже началось — отменить запись нельзя"
+                    )
 
                 await connection.execute(
                     """
@@ -2174,15 +2270,23 @@ class PostgresRepository(
                     """,
                     booking["id"],
                 )
+                payment_id = source["payment_id"] if source else None
+                grant_id = source["grant_id"] if source else None
+                if admin_telegram_id is not None and await self._source_expired(
+                    connection, payment_id, grant_id
+                ):
+                    payment_id = grant_id = None
                 _, balance = await self._change_credits(
                     connection,
                     telegram_id,
                     1,
                     "adjustment",
                     "slot_booking:{}:refund:{}".format(booking["id"], uuid.uuid4()),
-                    payment_id=source["payment_id"] if source else None,
-                    grant_id=source["grant_id"] if source else None,
+                    payment_id=payment_id,
+                    grant_id=grant_id,
                     booking_id=booking["id"],
+                    actor_telegram_id=admin_telegram_id,
+                    reason="Отмена записи студией" if admin_telegram_id else None,
                 )
                 # Своя отмена после конца срока абонемента: занятие
                 # возвращается в партию и сгорает вместе с ней (решение
@@ -2192,6 +2296,9 @@ class PostgresRepository(
                         "SELECT lesson_credits FROM bot_users WHERE telegram_id = $1",
                         telegram_id,
                     )
+                await notify_waitlist(
+                    self, connection, slot_id, "cancel:{}".format(booking["id"])
+                )
                 if notify_user:
                     await self._enqueue_notification(
                         connection,
@@ -2312,6 +2419,10 @@ class PostgresRepository(
                         admin_telegram_id,
                         slot["capacity"],
                         capacity,
+                    )
+                if capacity > slot["capacity"]:
+                    await notify_waitlist(
+                        self, connection, slot_id, "capacity:{}".format(capacity)
                     )
         return True
 

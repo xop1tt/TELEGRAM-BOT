@@ -28,6 +28,8 @@ AUDIT_ACTION_LABELS = {
     "lesson_package_created": "добавлен абонемент",
     "lesson_package_updated": "изменён абонемент",
     "studio_rules_updated": "изменены правила записи",
+    "booking_created": "запись участника на занятие",
+    "booking_cancelled": "отмена записи участника",
 }
 
 

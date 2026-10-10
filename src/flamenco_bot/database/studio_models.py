@@ -34,6 +34,7 @@ NOTIFICATION_KINDS = frozenset(
         "credits_adjusted",
         "package_expiring",
         "credits_expired",
+        "waitlist_seat",
     }
 )
 

@@ -73,6 +73,51 @@ class BookingService:
         )
         return cancelled
 
+    async def admin_book(
+        self, slot_id: int, telegram_id: int, admin_telegram_id: int
+    ) -> ClassBooking:
+        """Запись участника администратором — по тем же правилам, что
+        самозапись (открыто, есть место, пауза после отмены, занятие на
+        балансе): решение владельца студии. Участник получает уведомление,
+        действие — в журнале."""
+        booking = await self.repository.book_class_slot(
+            slot_id, telegram_id, notify_user=True
+        )
+        if not booking.already_booked:
+            await self.repository.record_staff_action(
+                admin_telegram_id,
+                "booking_created",
+                telegram_id,
+                {"slot_id": slot_id},
+            )
+        return booking
+
+    async def admin_cancel(
+        self, slot_id: int, telegram_id: int, admin_telegram_id: int
+    ) -> bool:
+        """Отмена записи администратором: всегда с возвратом занятия, даже
+        позже окна отмены (до начала занятия)."""
+        cancelled = await self.repository.cancel_class_slot_booking(
+            slot_id,
+            telegram_id,
+            notify_user=True,
+            admin_telegram_id=admin_telegram_id,
+        )
+        if cancelled:
+            await self.repository.record_staff_action(
+                admin_telegram_id,
+                "booking_cancelled",
+                telegram_id,
+                {"slot_id": slot_id},
+            )
+        return cancelled
+
+    async def join_waitlist(self, slot_id: int, telegram_id: int) -> Any:
+        return await self.repository.join_waitlist(slot_id, telegram_id)
+
+    async def leave_waitlist(self, slot_id: int, telegram_id: int) -> bool:
+        return await self.repository.leave_waitlist(slot_id, telegram_id)
+
     async def notify_admins_about_booking(
         self,
         booking: ClassBooking,

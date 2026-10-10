@@ -569,6 +569,10 @@ class PostgresStudioMixin:
                     """,
                     slot_id,
                 )
+                # Занятия больше нет — очередь на него тоже.
+                await connection.execute(
+                    "DELETE FROM lesson_waitlist WHERE slot_id = $1", slot_id
+                )
                 refunds = []
                 # Строки профилей блокируются в порядке telegram_id: две
                 # одновременные отмены с общими участниками не взаимоблокируются.

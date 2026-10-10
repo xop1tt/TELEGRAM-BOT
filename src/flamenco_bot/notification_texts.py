@@ -195,6 +195,21 @@ def render_notification(
             ),
             (PACKAGES_ACTION,),
         )
+    if kind == "waitlist_seat":
+        class_key = str(payload.get("class_key") or "")
+        slot_id = payload.get("slot_id")
+        actions = (SCHEDULE_ACTION,)
+        if class_key and slot_id:
+            actions = (("✅ Записаться", "book:{}:{}".format(class_key, slot_id)),)
+        return NotificationMessage(
+            "Освободилось место",
+            _join(
+                _class_line(payload),
+                "Вы в листе ожидания — запишитесь, пока место свободно: его "
+                "получит тот, кто запишется первым.",
+            ),
+            actions,
+        )
     if kind == "package_expiring":
         expires_at = _moment(payload.get("expires_at"))
         lessons = int(payload.get("lessons") or 0)

@@ -217,8 +217,9 @@ class SlotsScreenTests(unittest.IsolatedAsyncioTestCase):
 
         await show_slots(callback, self.repository, self.state)
 
-        self.repository.list_available_class_slots.assert_awaited_once_with(
-            "individual"
+        # Открытые занятия направления (и заполненные — для листа ожидания).
+        self.repository.list_class_slots.assert_awaited_once_with(
+            class_key="individual", limit=50
         )
         text, markup = callback.screen
         self.assertIn("Индивидуальное занятие", text)

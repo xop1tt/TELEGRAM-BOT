@@ -65,6 +65,10 @@ from ..schemas import (
     AdminRequestStatsResponse,
     AdminSlotResponse,
     AdminSlotTeacherRequest,
+    AdminCopyWeekRequest,
+    AdminSeriesRequest,
+    AdminSlotsCreatedResponse,
+    AdminWaitlistMemberResponse,
     AdminSupportActionResponse,
     AdminSupportReplyRequest,
     AdminSupportThreadResponse,
@@ -231,6 +235,81 @@ async def create_slot(
             status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)
         ) from error
     return AdminSlotResponse.from_record(slot)
+
+
+@router.post(
+    "/slots/series",
+    response_model=AdminSlotsCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_slot_series(
+    payload: AdminSeriesRequest,
+    admin_id: int = Depends(require_admin_actor),
+    schedule: ScheduleService = Depends(get_schedule_service),
+) -> AdminSlotsCreatedResponse:
+    """Занятие и его еженедельные повторы (всего ``weeks``); занятия,
+    которые уже есть в это время, пропускаются."""
+    try:
+        created, skipped = await schedule.create_series(
+            payload.class_key,
+            payload.starts_at,
+            payload.capacity,
+            admin_id,
+            payload.weeks,
+            teacher_telegram_id=payload.teacher_telegram_id,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)
+        ) from error
+    return AdminSlotsCreatedResponse(
+        created=[AdminSlotResponse.from_record(slot) for slot in created],
+        skipped=skipped,
+    )
+
+
+@router.post(
+    "/slots/copy-week",
+    response_model=AdminSlotsCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def copy_week(
+    payload: AdminCopyWeekRequest,
+    admin_id: int = Depends(require_admin_actor),
+    schedule: ScheduleService = Depends(get_schedule_service),
+) -> AdminSlotsCreatedResponse:
+    """Копия занятий недели на следующие ``weeks`` недель (с преподавателями
+    и вместимостью); существующие и прошедшие — пропускаются."""
+    try:
+        created, skipped = await schedule.copy_week(
+            payload.week_start, payload.weeks, admin_id
+        )
+    except LookupError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)
+        ) from error
+    return AdminSlotsCreatedResponse(
+        created=[AdminSlotResponse.from_record(slot) for slot in created],
+        skipped=skipped,
+    )
+
+
+@staff_router.get(
+    "/slots/{slot_id}/waitlist", response_model=List[AdminWaitlistMemberResponse]
+)
+async def slot_waitlist(
+    slot_id: int = _db_id(),
+    staff: StaffActor = Depends(require_staff),
+    schedule: ScheduleService = Depends(get_schedule_service),
+    repository: Any = Depends(get_repository),
+) -> List[AdminWaitlistMemberResponse]:
+    await _slot_or_404(schedule, slot_id, staff)
+    return [
+        AdminWaitlistMemberResponse(**vars(member))
+        for member in await repository.list_slot_waitlist(slot_id)
+    ]
 
 
 @staff_router.patch("/slots/{slot_id}", response_model=AdminSlotResponse)
