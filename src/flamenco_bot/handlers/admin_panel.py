@@ -893,7 +893,7 @@ async def client_card(
         )
     if overview.packages.unallocated:
         lines.append(
-            "Вне абонементов: {}.".format(lessons_count(overview.packages.unallocated))
+            "Бессрочно: {}.".format(lessons_count(overview.packages.unallocated))
         )
     if overview.upcoming:
         lines.append("Ближайшие занятия:")
@@ -1065,7 +1065,7 @@ async def show_client_packages(callback: CallbackQuery, repository: Any) -> None
             line += " — {}".format(package.reason)
         lines.append(line)
     if summary.unallocated:
-        lines.append("Вне абонементов: {}.".format(lessons_count(summary.unallocated)))
+        lines.append("Бессрочно: {}.".format(lessons_count(summary.unallocated)))
     rows = [
         [
             button(

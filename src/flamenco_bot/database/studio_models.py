@@ -9,7 +9,7 @@
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 
@@ -32,6 +32,8 @@ NOTIFICATION_KINDS = frozenset(
         "package_granted",
         "package_revoked",
         "credits_adjusted",
+        "package_expiring",
+        "credits_expired",
     }
 )
 
@@ -79,12 +81,12 @@ def effective_remaining(balance: int, raw: Sequence[int]) -> Tuple[list, int]:
     """Остаток каждого активного абонемента так, чтобы сумма равнялась балансу.
 
     ``raw`` — сумма ledger по каждому активному источнику (платёж или выдача)
-    в порядке списания: от самого раннего. Возвращает ``(остатки, вне
-    абонементов)``. Если баланс больше суммы остатков, разница — занятия
-    вне абонементов (ручные начисления, баланс до ledger); они списываются
-    первыми. Если меньше (например, ручное
-    списание без привязки к абонементу), недостача снимается с самых ранних
-    абонементов — в том же порядке, в каком идут обычные списания.
+    в порядке списания: сначала тот, что сгорает раньше (миграция 018).
+    Возвращает ``(остатки, вне абонементов)``. Если баланс больше суммы
+    остатков, разница — бессрочные занятия вне абонементов (возврат студией
+    за отменённое занятие после конца срока партии); они списываются
+    последними. Если меньше (ручное списание без привязки к абонементу),
+    недостача снимается с источников в порядке списания.
     """
     effective = [max(0, value) for value in raw]
     unallocated = balance - sum(effective)
@@ -103,15 +105,35 @@ def effective_remaining(balance: int, raw: Sequence[int]) -> Tuple[list, int]:
 def pick_credit_source_index(balance: int, raw: Sequence[int]) -> Optional[int]:
     """Индекс источника, с которого спишется следующее занятие.
 
-    ``None`` — списание идёт с занятий вне абонементов (или занятий нет).
+    Сначала — абонементы со сроком (в порядке сгорания), бессрочные занятия
+    вне абонементов — последними. ``None`` — списание с занятий вне
+    абонементов (или занятий нет).
     """
-    effective, unallocated = effective_remaining(balance, raw)
-    if unallocated > 0:
-        return None
+    effective, _ = effective_remaining(balance, raw)
     for index, value in enumerate(effective):
         if value > 0:
             return index
     return None
+
+
+FAR_FUTURE = datetime.max.replace(tzinfo=timezone.utc)
+
+
+def source_order_key(item: Any) -> tuple:
+    """Порядок списания: срок (бессрочные — в конце), дата получения, вид, id.
+
+    ``item`` — строка БД (asyncpg.Record) или ``UserPackage``.
+    """
+
+    def field(name: str) -> Any:
+        return getattr(item, name) if hasattr(item, name) else item[name]
+
+    return (
+        field("expires_at") or FAR_FUTURE,
+        field("acquired_at"),
+        field("kind"),
+        field("id"),
+    )
 
 
 def low_balance_dedupe_key(telegram_id: int, cycle_marker: int) -> str:
@@ -202,6 +224,8 @@ class CreditSource:
     title: str
     lessons: int
     remaining: int
+    # Когда сгорает остаток; None — бессрочно.
+    expires_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -209,7 +233,8 @@ class UserPackage:
     """Абонемент участника: купленный (платёж) или выданный студией.
 
     ``status``: active — есть остаток; used — все занятия использованы;
-    refund_pending / refunded — возврат оплаты; revoked — выдача отозвана.
+    expired — срок истёк (остаток сгорел); refund_pending / refunded —
+    возврат оплаты; revoked — выдача отозвана.
     """
 
     kind: str
@@ -222,6 +247,7 @@ class UserPackage:
     acquired_at: datetime
     amount_minor: Optional[int] = None
     reason: Optional[str] = None
+    expires_at: Optional[datetime] = None
 
     @property
     def is_active(self) -> bool:
@@ -232,7 +258,7 @@ class UserPackage:
 class PackageSummary:
     balance: int
     packages: Tuple[UserPackage, ...]
-    # Занятия на балансе вне абонементов: ручные начисления, баланс до ledger.
+    # Бессрочные занятия вне абонементов (возврат студией после срока партии).
     unallocated: int
 
     @property
@@ -241,10 +267,13 @@ class PackageSummary:
 
     @property
     def next_source(self) -> Optional[UserPackage]:
-        """С какого абонемента спишется следующая запись (None — с баланса)."""
-        if self.unallocated > 0:
-            return None
-        return next(iter(self.active_packages), None)
+        """С какого абонемента спишется следующая запись (None — с занятий
+        вне абонементов): сначала тот, что сгорает раньше."""
+        return next(iter(self.active_packages_by_expiry), None)
+
+    @property
+    def active_packages_by_expiry(self) -> Tuple[UserPackage, ...]:
+        return tuple(sorted(self.active_packages, key=source_order_key))
 
 
 @dataclass(frozen=True)

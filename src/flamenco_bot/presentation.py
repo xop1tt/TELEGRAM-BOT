@@ -131,6 +131,7 @@ def booking_cancellation_hint(booking: Any, now: Optional[datetime] = None) -> s
 PACKAGE_STATUS_LABELS = {
     "active": "действует",
     "used": "использован",
+    "expired": "срок истёк",
     "refund_pending": "возврат оплаты в обработке",
     "refunded": "оплата возвращена",
     "revoked": "отозван студией",
@@ -138,21 +139,27 @@ PACKAGE_STATUS_LABELS = {
 
 
 def package_line(package: Any) -> str:
-    """«Абонемент на 8 занятий» — осталось 5 из 8 · с 02.10.2026."""
+    """«Абонемент на 8 занятий» — осталось 5 из 8 · с 02.10.2026 до 01.12.2026."""
     origin = " (от студии)" if package.kind == "grant" else ""
     if package.status == "active":
         state = "осталось {} из {}".format(package.remaining, package.lessons)
     else:
         state = PACKAGE_STATUS_LABELS.get(package.status, package.status)
-    return "«{}»{} — {} · с {}".format(
-        package.title, origin, state, format_date(package.acquired_at)
-    )
+    expires_at = getattr(package, "expires_at", None)
+    period = "с {}".format(format_date(package.acquired_at))
+    if expires_at is not None and package.status in ("active", "expired"):
+        period += " до {}".format(format_date(expires_at))
+    return "«{}»{} — {} · {}".format(package.title, origin, state, period)
 
 
 def source_line(source: Any) -> str:
     """Откуда списано занятие при записи."""
     if source is None:
         return "Списано 1 занятие с баланса."
-    return "Списано 1 занятие — «{}», осталось {} из {}.".format(
+    text = "Списано 1 занятие — «{}», осталось {} из {}.".format(
         source.title, source.remaining, source.lessons
     )
+    expires_at = getattr(source, "expires_at", None)
+    if expires_at is not None and source.remaining > 0:
+        text += " Действуют до {}.".format(format_date(expires_at))
+    return text

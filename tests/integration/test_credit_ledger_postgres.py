@@ -513,7 +513,14 @@ class CreditLedgerPostgresTests(unittest.IsolatedAsyncioTestCase):
                 async with pool.acquire() as connection:
                     rows = await connection.fetch(
                         "SELECT entry_type, delta, actor_telegram_id, reason "
-                        "FROM lesson_credit_ledger ORDER BY id"
+                        "FROM lesson_credit_ledger "
+                        "WHERE reference_key NOT LIKE 'migration-018:%' ORDER BY id"
+                    )
+                    # 018 переносит остаток «вне абонементов» в выдачу со
+                    # сроком: +N к выдаче и −N без партии, баланс прежний.
+                    moved = await connection.fetch(
+                        "SELECT entry_type, delta FROM lesson_credit_ledger "
+                        "WHERE reference_key LIKE 'migration-018:%' ORDER BY delta"
                     )
                     delete_rules = await connection.fetch(
                         """
@@ -530,6 +537,10 @@ class CreditLedgerPostgresTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     [tuple(r) for r in rows],
                     [("adjustment", 1, None, None), ("purchase", 2, None, None)],
+                )
+                self.assertEqual(
+                    [tuple(r) for r in moved],
+                    [("adjustment", -3), ("package_grant", 3)],
                 )
                 self.assertEqual(
                     {r["table_name"]: r["confdeltype"].decode() for r in delete_rules},

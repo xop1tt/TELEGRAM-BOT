@@ -56,6 +56,7 @@ from .studio_models import (
     low_balance_dedupe_key,
     normalize_reason,
     pick_credit_source_index,
+    source_order_key,
 )
 
 
@@ -69,11 +70,12 @@ _SLOT_SELECT = SLOT_SELECT
 # Активные источники занятий участника (успешные платежи и действующие
 # выдачи) с суммой ledger по каждому — в порядке списания (FIFO).
 _ACTIVE_SOURCES_SQL = """
-    SELECT kind, id, title, lessons, acquired_at, remaining
+    SELECT kind, id, title, lessons, acquired_at, expires_at, remaining
     FROM (
         SELECT 'payment' AS kind, payment.id,
                payment.package_title AS title, payment.lessons,
                COALESCE(payment.completed_at, payment.created_at) AS acquired_at,
+               payment.expires_at,
                SUM(ledger.delta)::INTEGER AS remaining
         FROM lesson_payments AS payment
         JOIN lesson_credit_ledger AS ledger ON ledger.payment_id = payment.id
@@ -83,6 +85,7 @@ _ACTIVE_SOURCES_SQL = """
         SELECT 'grant' AS kind, grant_row.id,
                grant_row.package_title AS title, grant_row.lessons,
                grant_row.created_at AS acquired_at,
+               grant_row.expires_at,
                SUM(ledger.delta)::INTEGER AS remaining
         FROM lesson_package_grants AS grant_row
         JOIN lesson_credit_ledger AS ledger ON ledger.grant_id = grant_row.id
@@ -90,7 +93,8 @@ _ACTIVE_SOURCES_SQL = """
         GROUP BY grant_row.id
     ) AS sources
     WHERE remaining > 0
-    ORDER BY acquired_at, kind, id
+    -- Порядок списания: сначала сгорающие раньше (миграция 018).
+    ORDER BY expires_at NULLS LAST, acquired_at, kind, id
 """
 
 _LEDGER_SELECT = """
@@ -170,8 +174,110 @@ class PostgresStudioMixin:
                 title=row["title"],
                 lessons=row["lessons"],
                 remaining=effective[index],
+                expires_at=row["expires_at"],
             ),
             profile["notify_low_balance"],
+        )
+
+    async def _expire_lots(
+        self, connection: Any, telegram_id: int, now: Optional[datetime] = None
+    ) -> int:
+        """Сжигает остаток истёкших партий участника; возвращает число занятий.
+
+        Внутри транзакции вызывающего; блокирует строку профиля (как и
+        списание), так что запись и сгорание идут по очереди. Остаток
+        партии — тот же «эффективный», по которому идёт списание
+        (``effective_remaining``), поэтому сумма ledger по-прежнему равна
+        балансу. Каждая партия сгорает одной строкой ``expiration``;
+        обработанная партия помечается ``expiry_processed_at``.
+        """
+        current = now or datetime.now(timezone.utc)
+        balance = await connection.fetchval(
+            "SELECT lesson_credits FROM bot_users WHERE telegram_id = $1 "
+            "FOR NO KEY UPDATE",
+            telegram_id,
+        )
+        if balance is None:
+            return 0
+        sources = await connection.fetch(_ACTIVE_SOURCES_SQL, telegram_id)
+        effective, _ = effective_remaining(
+            balance, [row["remaining"] for row in sources]
+        )
+        burned = 0
+        for row, remaining in zip(sources, effective):
+            if row["expires_at"] is None or row["expires_at"] > current:
+                continue
+            if remaining <= 0:
+                continue
+            changed = await self._change_credits(
+                connection,
+                telegram_id,
+                -remaining,
+                "expiration",
+                "expire:{}:{}:{}".format(row["kind"], row["id"], uuid.uuid4()),
+                payment_id=row["id"] if row["kind"] == "payment" else None,
+                grant_id=row["id"] if row["kind"] == "grant" else None,
+                reason="Истёк срок действия: {}".format(row["title"])[:300],
+            )
+            burned += remaining
+            await self._enqueue_notification(
+                connection,
+                telegram_id,
+                "credits_expired",
+                {
+                    "title": row["title"],
+                    "lessons": remaining,
+                    "expired_at": row["expires_at"].isoformat(),
+                    "balance": changed[1] if changed else balance - burned,
+                },
+                "credits_expired:{}:{}:{}".format(
+                    row["kind"], row["id"], changed[0] if changed else uuid.uuid4()
+                ),
+            )
+        await connection.execute(
+            """
+            UPDATE lesson_payments SET expiry_processed_at = $2
+            WHERE telegram_id = $1 AND expires_at <= $2
+              AND expiry_processed_at IS NULL
+            """,
+            telegram_id,
+            current,
+        )
+        await connection.execute(
+            """
+            UPDATE lesson_package_grants SET expiry_processed_at = $2
+            WHERE telegram_id = $1 AND expires_at <= $2
+              AND expiry_processed_at IS NULL
+            """,
+            telegram_id,
+            current,
+        )
+        if burned:
+            logger.warning(
+                "Expired lesson credits burned telegram_id=%s lessons=%s",
+                telegram_id,
+                burned,
+            )
+        return burned
+
+    @staticmethod
+    async def _source_expired(
+        connection: Any,
+        payment_id: Optional[int],
+        grant_id: Optional[int],
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Истёк ли срок партии, с которой было списано занятие."""
+        if payment_id is None and grant_id is None:
+            return False
+        expires_at = await connection.fetchval(
+            "SELECT expires_at FROM lesson_payments WHERE id = $1"
+            if payment_id is not None
+            else "SELECT expires_at FROM lesson_package_grants WHERE id = $1",
+            payment_id if payment_id is not None else grant_id,
+        )
+        return expires_at is not None and expires_at <= (
+            now or datetime.now(timezone.utc)
         )
 
     @staticmethod
@@ -476,14 +582,21 @@ class PostgresStudioMixin:
                         """,
                         booking["id"],
                     )
+                    payment_id = source["payment_id"] if source else None
+                    grant_id = source["grant_id"] if source else None
+                    # Студия отменила занятие, а срок абонемента уже вышел:
+                    # возвращённое занятие не сгорает — оно становится
+                    # бессрочным (без партии), так решил владелец студии.
+                    if await self._source_expired(connection, payment_id, grant_id):
+                        payment_id = grant_id = None
                     changed = await self._change_credits(
                         connection,
                         booking["telegram_id"],
                         1,
                         "slot_cancellation",
                         "slot_cancellation:{}:{}".format(slot_id, booking["id"]),
-                        payment_id=source["payment_id"] if source else None,
-                        grant_id=source["grant_id"] if source else None,
+                        payment_id=payment_id,
+                        grant_id=grant_id,
                         booking_id=booking["id"],
                         actor_telegram_id=admin_telegram_id,
                         reason=normalized_reason,
@@ -584,6 +697,7 @@ class PostgresStudioMixin:
                            COALESCE(payment.completed_at, payment.created_at)
                                AS acquired_at,
                            payment.amount_minor, NULL::TEXT AS reason,
+                           payment.expires_at,
                            COALESCE((
                                SELECT SUM(ledger.delta) FROM lesson_credit_ledger
                                    AS ledger
@@ -598,7 +712,7 @@ class PostgresStudioMixin:
                     SELECT 'grant', grant_row.id, grant_row.package_key,
                            grant_row.package_title, grant_row.lessons,
                            grant_row.status, grant_row.created_at, NULL::BIGINT,
-                           grant_row.reason,
+                           grant_row.reason, grant_row.expires_at,
                            COALESCE((
                                SELECT SUM(ledger.delta) FROM lesson_credit_ledger
                                    AS ledger
@@ -628,8 +742,12 @@ class PostgresStudioMixin:
         reason: str,
         admin_telegram_id: int,
         idempotence_key: uuid.UUID,
+        validity_days: Optional[int] = None,
     ) -> PackageGrantResult:
         """Выдача абонемента администратором без оплаты через ЮKassa.
+
+        ``validity_days`` — срок действия с момента выдачи (из каталога);
+        ``None`` — бессрочно.
 
         Занятия начисляются через ``_change_credits`` (тип ``package_grant``,
         актор и причина обязательны и на уровне БД). Повтор с тем же ключом
@@ -651,9 +769,12 @@ class PostgresStudioMixin:
                         """
                         INSERT INTO lesson_package_grants (
                             telegram_id, package_key, package_title, lessons,
-                            granted_by, reason, idempotence_key
+                            granted_by, reason, idempotence_key, expires_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        VALUES (
+                            $1, $2, $3, $4, $5, $6, $7,
+                            NOW() + make_interval(days => $8::INTEGER)
+                        )
                         ON CONFLICT (idempotence_key) DO NOTHING
                         RETURNING *
                         """,
@@ -664,6 +785,7 @@ class PostgresStudioMixin:
                         admin_telegram_id,
                         normalized_reason,
                         idempotence_key,
+                        validity_days,
                     )
                 except asyncpg.ForeignKeyViolationError as error:
                     raise LookupError(
@@ -1162,6 +1284,92 @@ class PostgresStudioMixin:
             )
         return int(result.split()[-1])
 
+    # ---------- срок действия абонементов ----------
+
+    async def expire_due_lots(self, limit: int = 200) -> int:
+        """Сжигает остатки истёкших партий (фоновая задача); число занятий.
+
+        Каждый участник — своей транзакцией; повтор безопасен: обработанные
+        партии помечаются, а сгоревший остаток больше не числится.
+        """
+        async with self._pool.acquire() as connection:
+            owners = await connection.fetch(
+                """
+                SELECT telegram_id FROM lesson_payments
+                WHERE expires_at <= NOW() AND expiry_processed_at IS NULL
+                UNION
+                SELECT telegram_id FROM lesson_package_grants
+                WHERE expires_at <= NOW() AND expiry_processed_at IS NULL
+                LIMIT $1
+                """,
+                limit,
+            )
+        burned = 0
+        for owner in owners:
+            async with self._pool.acquire() as connection:
+                async with connection.transaction():
+                    burned += await self._expire_lots(connection, owner["telegram_id"])
+        return burned
+
+    async def enqueue_expiry_warnings(self, warning_days: int) -> int:
+        """Предупреждения «абонемент скоро сгорит» за ``warning_days`` дней.
+
+        Одно на партию и её срок (dedupe); только если в ней ещё есть
+        занятия. ``0`` — предупреждения выключены.
+        """
+        if warning_days <= 0:
+            return 0
+        async with self._pool.acquire() as connection:
+            owners = await connection.fetch(
+                """
+                SELECT DISTINCT telegram_id FROM (
+                    SELECT telegram_id FROM lesson_payments
+                    WHERE status = 'succeeded'
+                      AND expires_at > NOW()
+                      AND expires_at <= NOW() + make_interval(days => $1)
+                    UNION
+                    SELECT telegram_id FROM lesson_package_grants
+                    WHERE status = 'active'
+                      AND expires_at > NOW()
+                      AND expires_at <= NOW() + make_interval(days => $1)
+                ) AS due
+                """,
+                warning_days,
+            )
+            created = 0
+            horizon = datetime.now(timezone.utc) + timedelta(days=warning_days)
+            for owner in owners:
+                telegram_id = owner["telegram_id"]
+                async with connection.transaction():
+                    balance = await connection.fetchval(
+                        "SELECT lesson_credits FROM bot_users WHERE telegram_id = $1",
+                        telegram_id,
+                    )
+                    sources = await connection.fetch(_ACTIVE_SOURCES_SQL, telegram_id)
+                    effective, _ = effective_remaining(
+                        balance, [row["remaining"] for row in sources]
+                    )
+                    for row, remaining in zip(sources, effective):
+                        expires_at = row["expires_at"]
+                        if remaining <= 0 or expires_at is None or expires_at > horizon:
+                            continue
+                        if await self._enqueue_notification(
+                            connection,
+                            telegram_id,
+                            "package_expiring",
+                            {
+                                "title": row["title"],
+                                "lessons": remaining,
+                                "expires_at": expires_at.isoformat(),
+                            },
+                            "package_expiring:{}:{}:{}".format(
+                                row["kind"], row["id"], int(expires_at.timestamp())
+                            ),
+                            expires_at=expires_at,
+                        ):
+                            created += 1
+        return created
+
     async def is_reminder_current(self, booking_id: int, starts_at: datetime) -> bool:
         """Запись ещё действует и занятие не перенесено/не отменено."""
         async with self._pool.acquire() as connection:
@@ -1480,28 +1688,42 @@ class PostgresStudioMixin:
         return ticket["telegram_id"]
 
 
-def build_package_summary(balance: int, records: Sequence[Any]) -> PackageSummary:
-    """Абонементы участника из строк источников (общая для PostgreSQL и памяти).
+def build_package_summary(
+    balance: int, records: Sequence[Any], now: Optional[datetime] = None
+) -> PackageSummary:
+    """Абонементы участника из строк источников.
 
-    ``records`` — в порядке списания (FIFO); поля: kind, id, package_key,
-    title, lessons, source_status, acquired_at, amount_minor, reason,
-    raw_remaining.
+    ``records`` — в порядке получения (так они и показываются); поля: kind,
+    id, package_key, title, lessons, source_status, acquired_at,
+    amount_minor, reason, expires_at, raw_remaining. Остатки считаются в
+    порядке списания (сначала сгорающие раньше) — так же, как при записи.
+    Партия с истёкшим сроком — ``expired``: её остаток сгорает (фоновой
+    задачей), записаться на него уже нельзя.
     """
-    active_indexes = [
-        index
-        for index, record in enumerate(records)
-        if (record["kind"] == "payment" and record["source_status"] == "succeeded")
-        or (record["kind"] == "grant" and record["source_status"] == "active")
-    ]
+    current = now or datetime.now(timezone.utc)
+    active_indexes = sorted(
+        (
+            index
+            for index, record in enumerate(records)
+            if (record["kind"] == "payment" and record["source_status"] == "succeeded")
+            or (record["kind"] == "grant" and record["source_status"] == "active")
+        ),
+        key=lambda index: source_order_key(records[index]),
+    )
     effective, unallocated = effective_remaining(
         balance, [records[index]["raw_remaining"] for index in active_indexes]
     )
     effective_by_index = dict(zip(active_indexes, effective))
     packages = []
     for index, record in enumerate(records):
+        expires_at = record["expires_at"]
         if index in effective_by_index:
             remaining = effective_by_index[index]
-            status = "active" if remaining > 0 else "used"
+            if expires_at is not None and expires_at <= current:
+                status = "expired"
+                remaining = 0
+            else:
+                status = "active" if remaining > 0 else "used"
         else:
             remaining = 0
             status = record["source_status"]
@@ -1517,6 +1739,7 @@ def build_package_summary(balance: int, records: Sequence[Any]) -> PackageSummar
                 acquired_at=record["acquired_at"],
                 amount_minor=record["amount_minor"],
                 reason=record["reason"],
+                expires_at=expires_at,
             )
         )
     return PackageSummary(

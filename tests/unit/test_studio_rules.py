@@ -45,9 +45,11 @@ def entry(entry_type, delta, booking_id=None, reason=None):
 
 
 class PackageRulesTests(unittest.TestCase):
-    def test_unallocated_credits_are_spent_before_packages(self):
+    def test_packages_are_spent_before_unexpiring_credits(self):
+        # Бессрочные занятия вне абонементов — в последнюю очередь.
         self.assertEqual(effective_remaining(5, [2, 2]), ([2, 2], 1))
-        self.assertIsNone(pick_credit_source_index(5, [2, 2]))
+        self.assertEqual(pick_credit_source_index(5, [2, 2]), 0)
+        self.assertIsNone(pick_credit_source_index(1, [0, 0]))
 
     def test_oldest_package_is_next_when_no_unallocated(self):
         self.assertEqual(pick_credit_source_index(4, [2, 2]), 0)
@@ -193,6 +195,16 @@ class NotificationTextTests(unittest.TestCase):
             },
             "low_balance": {"balance": 1},
             "package_granted": {"title": "Абонемент", "lessons": 4, "balance": 4},
+            "package_expiring": {
+                "title": "Абонемент на 4 занятия",
+                "lessons": 2,
+                "expires_at": "2026-10-20T16:00:00+00:00",
+            },
+            "credits_expired": {
+                "title": "Абонемент на 4 занятия",
+                "lessons": 2,
+                "balance": 0,
+            },
             "package_revoked": {
                 "title": "Абонемент",
                 "revoked_lessons": 2,

@@ -363,26 +363,31 @@ class StudioPostgresTests(unittest.IsolatedAsyncioTestCase):
 
     # --- абонементы ------------------------------------------------------
 
-    async def test_bookings_use_unallocated_credits_then_oldest_package(self):
-        await self._user(801, credits=1)  # ручное начисление вне абонемента
+    async def test_bookings_use_soonest_expiring_package_first(self):
+        # Ручное начисление — партия со сроком 60 дней, абонемент pack_4 —
+        # 30 дней: списывается сначала то, что сгорает раньше.
+        await self._user(801, credits=1)
         payment_id = await self._paid(801, lessons=2)
         slots = [await self._slot(days=d) for d in (2, 3, 4)]
 
         first = await self.repo.book_class_slot(slots[0].id, 801)
         second = await self.repo.book_class_slot(slots[1].id, 801)
 
-        self.assertIsNone(first.source)
-        self.assertEqual(second.source.id, payment_id)
-        self.assertEqual(second.source.remaining, 1)
+        self.assertEqual((first.source.id, first.source.remaining), (payment_id, 1))
+        self.assertIsNotNone(first.source.expires_at)
+        self.assertEqual((second.source.id, second.source.remaining), (payment_id, 0))
         summary = await self.repo.get_package_summary(801)
         self.assertEqual(summary.balance, 1)
         self.assertEqual(summary.unallocated, 0)
-        self.assertEqual(summary.active_packages[0].remaining, 1)
+        manual = summary.active_packages_by_expiry[0]
+        self.assertEqual((manual.kind, manual.remaining), ("grant", 1))
+        self.assertEqual(manual.title, "Начисление студии")
 
         # Отмена возвращает занятие в тот же абонемент.
         self.assertTrue(await self.repo.cancel_class_slot_booking(slots[1].id, 801))
         summary = await self.repo.get_package_summary(801)
-        self.assertEqual(summary.active_packages[0].remaining, 2)
+        self.assertEqual(summary.next_source.id, payment_id)
+        self.assertEqual(summary.next_source.remaining, 1)
         await self._assert_consistent(801)
 
     async def test_parallel_bookings_of_one_user_keep_package_totals(self):
@@ -404,9 +409,7 @@ class StudioPostgresTests(unittest.IsolatedAsyncioTestCase):
             803, 4, "компенсация", ADMIN_ID, uuid.uuid4()
         )
         slot = await self._slot()
-        # Ручные занятия вне абонемента расходуются первыми — израсходуем их.
-        for days in (2, 3, 4, 5):
-            await self.repo.book_class_slot((await self._slot(days=days)).id, 803)
+        # Абонемент сгорает раньше ручного начисления — запись берёт его.
         await self.repo.book_class_slot(slot.id, 803)  # 1 занятие абонемента
 
         with self.assertRaises(ValueError):

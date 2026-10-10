@@ -58,14 +58,9 @@ class CatalogService:
     async def update_rules(
         self,
         admin_telegram_id: int,
-        cancellation_deadline_hours: Optional[int] = None,
-        rebook_cooldown_hours: Optional[int] = None,
+        **values: Optional[int],
     ) -> StudioRules:
-        updated = await self.repository.update_studio_rules(
-            admin_telegram_id,
-            cancellation_deadline_hours=cancellation_deadline_hours,
-            rebook_cooldown_hours=rebook_cooldown_hours,
-        )
+        updated = await self.repository.update_studio_rules(admin_telegram_id, **values)
         await self.refresh()
         return updated
 

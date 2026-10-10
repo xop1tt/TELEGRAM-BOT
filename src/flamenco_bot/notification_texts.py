@@ -195,4 +195,37 @@ def render_notification(
             ),
             (PACKAGES_ACTION,),
         )
+    if kind == "package_expiring":
+        expires_at = _moment(payload.get("expires_at"))
+        lessons = int(payload.get("lessons") or 0)
+        return NotificationMessage(
+            "Абонемент скоро сгорит",
+            _join(
+                "«{}»: осталось {} — действуют до {}.".format(
+                    payload.get("title") or "Абонемент",
+                    lessons_count(lessons),
+                    to_studio_time(expires_at).strftime("%d.%m.%Y %H:%M")
+                    if expires_at
+                    else "конца срока",
+                ),
+                "Запишитесь на занятие, чтобы не потерять их.",
+            ),
+            (SCHEDULE_ACTION,),
+        )
+    if kind == "credits_expired":
+        lessons = int(payload.get("lessons") or 0)
+        return NotificationMessage(
+            "Срок абонемента истёк",
+            _join(
+                "«{}»: {} сгорели — срок действия закончился.".format(
+                    payload.get("title") or "Абонемент", lessons_count(lessons)
+                )
+                if lessons != 1
+                else "«{}»: 1 занятие сгорело — срок действия закончился.".format(
+                    payload.get("title") or "Абонемент"
+                ),
+                _balance(payload),
+            ),
+            (BUY_ACTION,),
+        )
     return NotificationMessage("Уведомление студии", "", ())

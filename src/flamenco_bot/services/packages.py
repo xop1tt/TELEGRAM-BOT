@@ -64,6 +64,7 @@ class PackageService:
             reason,
             admin_telegram_id,
             idempotence_key,
+            validity_days=package.validity_days,
         )
         logger.info(
             "Package grant processed grant_id=%s applied=%s",

@@ -34,8 +34,10 @@ def parse_credit_adjustment_limit(value: str) -> int:
         raise ValueError(
             "CREDIT_ADJUSTMENT_MAX_DELTA должен быть целым числом"
         ) from error
-    if limit < 1:
-        raise ValueError("CREDIT_ADJUSTMENT_MAX_DELTA должен быть не меньше 1")
+    # Начисление становится выдачей со сроком (миграция 018), а в одной
+    # выдаче — не больше 100 занятий.
+    if not 1 <= limit <= 100:
+        raise ValueError("CREDIT_ADJUSTMENT_MAX_DELTA должен быть от 1 до 100")
     return limit
 
 

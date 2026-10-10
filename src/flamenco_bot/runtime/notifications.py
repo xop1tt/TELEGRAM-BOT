@@ -30,6 +30,7 @@ from aiogram.exceptions import (
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..database.studio_models import UserNotification
+from ..studio_rules import rules
 from ..notification_texts import NotificationMessage, render_notification
 
 
@@ -191,12 +192,34 @@ async def run_notification_worker(
                     or now - last_reminder_scan >= reminder_interval_seconds
                 ):
                     created = await repository.enqueue_due_reminders(reminder_lead)
-                    last_reminder_scan = now
                     if created:
                         logger.info("Lesson reminders queued count=%s", created)
+                if last_reminder_scan is None or (
+                    now - last_reminder_scan >= reminder_interval_seconds
+                ):
+                    last_reminder_scan = now
+                    try:
+                        await process_credit_expiry(repository, logger)
+                    except Exception:
+                        # Сбой сгорания не должен останавливать отправку.
+                        logger.exception("Credit expiry processing failed")
                 await dispatch_due_notifications(repository, bot, logger)
         except Exception:
             logger.exception("Notification worker iteration failed")
+
+
+async def process_credit_expiry(repository: Any, logger: logging.Logger) -> None:
+    """Сгорание истёкших абонементов и предупреждения о скором сгорании.
+
+    Тем же циклом, что напоминания (раз в несколько минут): уведомления
+    ставятся в outbox в транзакции сгорания и уходят обычной отправкой.
+    """
+    burned = await repository.expire_due_lots()
+    if burned:
+        logger.info("Expired lesson credits burned lessons=%s", burned)
+    warned = await repository.enqueue_expiry_warnings(rules().expiry_warning_days)
+    if warned:
+        logger.info("Package expiry warnings queued count=%s", warned)
 
 
 def start_notification_worker(

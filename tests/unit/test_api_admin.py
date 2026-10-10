@@ -292,13 +292,16 @@ class AdminApiTests(ApiTestBase):
     def test_booking_rules_are_set_by_admin(self):
         self.register()
         self.make_admin()
-        self.assertEqual(
-            self.client.get("/api/admin/settings").json(),
-            {"cancellation_deadline_hours": 24, "rebook_cooldown_hours": 12},
-        )
+        defaults = {
+            "cancellation_deadline_hours": 24,
+            "rebook_cooldown_hours": 12,
+            "manual_credit_validity_days": 60,
+            "expiry_warning_days": 7,
+        }
+        self.assertEqual(self.client.get("/api/admin/settings").json(), defaults)
         updated = self.client.put(
             "/api/admin/settings",
-            json={"cancellation_deadline_hours": 6, "rebook_cooldown_hours": 0},
+            json=dict(defaults, cancellation_deadline_hours=6, rebook_cooldown_hours=0),
         )
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(
@@ -308,7 +311,7 @@ class AdminApiTests(ApiTestBase):
         self.assertEqual(
             self.client.put(
                 "/api/admin/settings",
-                json={"cancellation_deadline_hours": 500, "rebook_cooldown_hours": 0},
+                json=dict(defaults, cancellation_deadline_hours=500),
             ).status_code,
             422,
         )

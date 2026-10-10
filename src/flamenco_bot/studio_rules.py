@@ -19,6 +19,10 @@ class StudioRules:
     cancellation_deadline_hours: int = 24
     # После своей отмены повторная запись на то же занятие — через.
     rebook_cooldown_hours: int = 12
+    # Срок ручных начислений «± баланс», дней (миграция 018).
+    manual_credit_validity_days: int = 60
+    # За сколько дней предупредить, что абонемент сгорает (0 — не надо).
+    expiry_warning_days: int = 7
 
     @property
     def cancellation_deadline(self) -> timedelta:

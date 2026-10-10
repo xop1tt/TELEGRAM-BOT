@@ -147,7 +147,7 @@ async def my_packages_screen(
 ) -> tuple[str, InlineKeyboardMarkup]:
     summary = await PackageService(repository).summary(telegram_id)
     lines = ["🎟 Абонементы", balance_line(summary.balance) + "."]
-    active = summary.active_packages
+    active = summary.active_packages_by_expiry
     if active:
         lines.extend(["", "Действующие:"])
         lines.extend("• " + package_line(package) for package in active)
@@ -155,7 +155,7 @@ async def my_packages_screen(
         lines.extend(
             [
                 "",
-                "Вне абонементов (начислено студией): {}.".format(
+                "Бессрочно (возврат за отменённые студией занятия): {}.".format(
                     lessons_count(summary.unallocated)
                 ),
             ]
@@ -174,10 +174,10 @@ async def my_packages_screen(
                 "Следующая запись спишет занятие {}.".format(
                     "из «{}»".format(next_source.title)
                     if next_source is not None
-                    else "из занятий вне абонементов"
+                    else "из бессрочных занятий"
                 ),
-                "Сначала расходуются занятия вне абонементов, затем — самый "
-                "ранний абонемент.",
+                "Сначала расходуется абонемент, который сгорает раньше; "
+                "бессрочные занятия — в последнюю очередь.",
             ]
         )
     return "\n".join(lines), markup(

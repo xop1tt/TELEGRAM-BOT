@@ -24,7 +24,7 @@ logger = logging.getLogger("bot.database")
 # Схему создают и меняют миграции репозитория базы данных (DATABASE,
 # migrate.py); бот и API только проверяют при старте, что она не старее
 # нужной этому коду. Повышайте вместе с кодом, которому нужна новая миграция.
-REQUIRED_SCHEMA_VERSION = "017"
+REQUIRED_SCHEMA_VERSION = "018"
 MAX_SUPPORT_MESSAGE_LENGTH = 2000
 # Бизнес-правила бронирования слотов, подтверждённые владельцем продукта:
 # - запись стоит 1 lesson_credit, отмена возвращает его;
@@ -886,9 +886,15 @@ class PostgresRepository(
                     """
                     INSERT INTO lesson_payments (
                         telegram_id, package_key, package_title, lessons, amount_minor,
-                        provider_payment_id, confirmation_url, idempotence_key
+                        provider_payment_id, confirmation_url, idempotence_key,
+                        validity_days
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    -- Срок абонемента фиксируется при создании платежа, как
+                    -- и цена: позднее изменение каталога его не меняет.
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8,
+                        (SELECT validity_days FROM lesson_packages WHERE key = $2)
+                    )
                     ON CONFLICT (idempotence_key) WHERE idempotence_key IS NOT NULL
                     DO UPDATE SET idempotence_key = EXCLUDED.idempotence_key
                     RETURNING id, telegram_id, package_key, package_title, lessons,
@@ -965,7 +971,8 @@ class PostgresRepository(
                 record = await connection.fetchrow(
                     """
                     UPDATE lesson_payments
-                    SET status = 'succeeded', completed_at = NOW()
+                    SET status = 'succeeded', completed_at = NOW(),
+                        expires_at = NOW() + make_interval(days => validity_days)
                     WHERE id = $1 AND telegram_id = $2 AND status = 'pending'
                     RETURNING lessons
                     """,
@@ -1354,12 +1361,48 @@ class PostgresRepository(
             async with connection.transaction():
                 if not await is_staff_admin(connection, actor_telegram_id):
                     raise PermissionError("Корректировку может выполнить только админ")
+                grant_id = None
+                if delta > 0:
+                    # Начисление — партия со сроком ручных начислений
+                    # (studio_settings, миграция 018): «Начисление студии».
+                    # Ключ выдачи — тот же ключ идемпотентности, повтор её
+                    # не создаёт.
+                    if not 1 <= delta <= 100:
+                        raise ValueError("За раз можно начислить от 1 до 100 занятий")
+                    try:
+                        grant_id = await connection.fetchval(
+                            """
+                            INSERT INTO lesson_package_grants (
+                                telegram_id, package_key, package_title,
+                                lessons, granted_by, reason, idempotence_key,
+                                expires_at
+                            )
+                            SELECT $1, 'manual', 'Начисление студии', $2, $3, $4,
+                                   $5, NOW() + make_interval(
+                                       days => settings.manual_credit_validity_days
+                                   )
+                            FROM studio_settings AS settings
+                            WHERE settings.id
+                            ON CONFLICT (idempotence_key) DO NOTHING
+                            RETURNING id
+                            """,
+                            telegram_id,
+                            delta,
+                            actor_telegram_id,
+                            normalized_reason,
+                            idempotence_key,
+                        )
+                    except asyncpg.ForeignKeyViolationError as error:
+                        raise LookupError(
+                            "Профиль не найден для Telegram ID {}".format(telegram_id)
+                        ) from error
                 changed = await self._change_credits(
                     connection,
                     telegram_id,
                     delta,
                     "admin_adjustment",
                     reference_key,
+                    grant_id=grant_id,
                     actor_telegram_id=actor_telegram_id,
                     reason=normalized_reason,
                     insufficient_message=(
@@ -1917,6 +1960,12 @@ class PostgresRepository(
         уведомление о записи в outbox (сайт; бот показывает результат сам).
         """
         async with self._pool.acquire() as connection:
+            # Сначала — отдельной транзакцией — сгорают истёкшие партии:
+            # записаться на занятия с вышедшим сроком нельзя, даже если
+            # фоновая задача их ещё не обработала, а неудачная запись не
+            # должна откатить само сгорание.
+            async with connection.transaction():
+                await self._expire_lots(connection, telegram_id)
             async with connection.transaction():
                 slot = await connection.fetchrow(
                     """
@@ -2128,6 +2177,14 @@ class PostgresRepository(
                     grant_id=source["grant_id"] if source else None,
                     booking_id=booking["id"],
                 )
+                # Своя отмена после конца срока абонемента: занятие
+                # возвращается в партию и сгорает вместе с ней (решение
+                # владельца студии).
+                if await self._expire_lots(connection, telegram_id):
+                    balance = await connection.fetchval(
+                        "SELECT lesson_credits FROM bot_users WHERE telegram_id = $1",
+                        telegram_id,
+                    )
                 if notify_user:
                     await self._enqueue_notification(
                         connection,

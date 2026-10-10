@@ -419,11 +419,13 @@ class UserPackageResponse(BaseModel):
     title: str
     lessons: int
     remaining: int
-    # active | used | refund_pending | refunded | revoked
+    # active | used | expired | refund_pending | refunded | revoked
     status: str
     status_label: str
     acquired_at: datetime
     amount_minor: Optional[int] = None
+    # Когда сгорает остаток; None — бессрочно.
+    expires_at: Optional[datetime] = None
 
     @classmethod
     def from_package(cls, package: UserPackage) -> "UserPackageResponse":
@@ -438,6 +440,7 @@ class UserPackageResponse(BaseModel):
             status_label=PACKAGE_STATUS_LABELS.get(package.status, package.status),
             acquired_at=package.acquired_at,
             amount_minor=package.amount_minor,
+            expires_at=package.expires_at,
         )
 
 
@@ -445,7 +448,7 @@ class PackageSummaryResponse(BaseModel):
     """Баланс по абонементам: сумма ``remaining`` + ``unallocated`` = ``balance``."""
 
     balance: int
-    # Занятия вне абонементов (ручные начисления студии и т. п.).
+    # Бессрочные занятия вне абонементов (возврат студией после срока).
     unallocated: int
     # С какого абонемента спишется следующая запись (None — вне абонементов).
     next_source_title: Optional[str]
@@ -809,6 +812,8 @@ class AdminLessonPackage(BaseModel):
 class StudioRulesModel(BaseModel):
     cancellation_deadline_hours: int = Field(ge=0, le=168)
     rebook_cooldown_hours: int = Field(ge=0, le=168)
+    manual_credit_validity_days: int = Field(ge=1, le=3650)
+    expiry_warning_days: int = Field(ge=0, le=60)
 
 
 class StaffRoleRequest(BaseModel):

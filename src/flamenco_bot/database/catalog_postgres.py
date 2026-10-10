@@ -19,6 +19,10 @@ from .staff_postgres import record_staff_action
 logger = logging.getLogger("bot.database")
 
 _FORMAT_COLUMNS = "key, title, short_title, description, level, sort_order, is_active"
+_RULE_COLUMNS = (
+    "cancellation_deadline_hours, rebook_cooldown_hours, "
+    "manual_credit_validity_days, expiry_warning_days"
+)
 _PACKAGE_COLUMNS = (
     "key, title, lessons, price_minor, validity_days, sort_order, is_active"
 )
@@ -186,8 +190,7 @@ class PostgresCatalogMixin:
     async def get_studio_rules(self) -> StudioRules:
         async with self._pool.acquire() as connection:
             record = await connection.fetchrow(
-                "SELECT cancellation_deadline_hours, rebook_cooldown_hours "
-                "FROM studio_settings WHERE id"
+                "SELECT {} FROM studio_settings WHERE id".format(_RULE_COLUMNS)
             )
         return StudioRules(**dict(record)) if record is not None else StudioRules()
 
@@ -196,15 +199,19 @@ class PostgresCatalogMixin:
         actor_telegram_id: int,
         cancellation_deadline_hours: Optional[int] = None,
         rebook_cooldown_hours: Optional[int] = None,
+        manual_credit_validity_days: Optional[int] = None,
+        expiry_warning_days: Optional[int] = None,
     ) -> StudioRules:
         """Меняет правила; ``None`` — оставить как есть. Новые значения
-        действуют сразу для всех записей и отмен."""
+        действуют сразу для всех записей и отмен; срок ручных начислений —
+        для следующих начислений."""
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 await _require_admin(connection, actor_telegram_id)
                 previous = await connection.fetchrow(
-                    "SELECT cancellation_deadline_hours, rebook_cooldown_hours "
-                    "FROM studio_settings WHERE id FOR UPDATE"
+                    "SELECT {} FROM studio_settings WHERE id FOR UPDATE".format(
+                        _RULE_COLUMNS
+                    )
                 )
                 record = await connection.fetchrow(
                     """
@@ -213,13 +220,19 @@ class PostgresCatalogMixin:
                             $1, cancellation_deadline_hours
                         ),
                         rebook_cooldown_hours = COALESCE($2, rebook_cooldown_hours),
+                        manual_credit_validity_days = COALESCE(
+                            $3, manual_credit_validity_days
+                        ),
+                        expiry_warning_days = COALESCE($4, expiry_warning_days),
                         updated_at = NOW(),
-                        updated_by = $3
+                        updated_by = $5
                     WHERE id
-                    RETURNING cancellation_deadline_hours, rebook_cooldown_hours
-                    """,
+                    RETURNING {}
+                    """.format(_RULE_COLUMNS),
                     cancellation_deadline_hours,
                     rebook_cooldown_hours,
+                    manual_credit_validity_days,
+                    expiry_warning_days,
                     actor_telegram_id,
                 )
                 await record_staff_action(
