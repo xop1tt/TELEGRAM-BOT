@@ -1,5 +1,6 @@
 """Правила профиля участника, общие для бота и веб-API."""
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence, Tuple
@@ -22,6 +23,20 @@ def normalize_user_name(value: str) -> str:
             "Имя должно содержать от 1 до {} символов".format(MAX_USER_NAME_LENGTH)
         )
     return user_name
+
+
+_PHONE = re.compile(r"\+?[0-9][0-9 ()-]{5,30}")
+
+
+def normalize_phone(value: str) -> str:
+    """Телефон: цифры, пробелы, скобки и дефисы, от 7 до 32 символов."""
+    phone = value.strip()
+    if not _PHONE.fullmatch(phone):
+        raise ValueError(
+            "Введите номер телефона: цифры, пробелы, скобки и дефисы "
+            "(от 7 до 32 символов)"
+        )
+    return phone
 
 
 @dataclass(frozen=True)

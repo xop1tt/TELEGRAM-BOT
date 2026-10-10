@@ -27,6 +27,7 @@ OPERATION_LABELS = {
     "payment_refund": "Возврат оплаты",
     "payment_refund_cancelled": "Возврат оплаты отменён",
     "lesson_debit": "Списание занятия",
+    "expiration": "Сгорание: истёк срок абонемента",
     "lesson_credit": "Начисление занятия",
 }
 
@@ -39,6 +40,7 @@ _USER_VISIBLE_REASON = frozenset(
         "package_grant",
         "package_revoke",
         "studio_cancellation",
+        "expiration",
     }
 )
 
@@ -63,7 +65,7 @@ def classify_entry(entry: LedgerEntry) -> str:
         return "payment_refund"
     if entry_type == "refund_release":
         return "payment_refund_cancelled"
-    if entry_type in {"purchase", "package_grant", "package_revoke"}:
+    if entry_type in {"purchase", "package_grant", "package_revoke", "expiration"}:
         return entry_type
     return "lesson_credit" if entry.delta > 0 else "lesson_debit"
 

@@ -21,9 +21,12 @@ from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 
-from ...database.studio_models import SlotNotFoundError, SlotStateError
-from ...keyboards.user.cabinet import PAYMENT_STATUS_LABELS
-from ...services import AdminService, CatalogService, ScheduleService
+from ...database.studio_models import (
+    SlotNotFoundError,
+    SlotStateError,
+    SupportTicketStateError,
+)
+from ...services import AdminService, CatalogService, ScheduleService, SupportService
 from ...services.support import (
     SupportReplyStatus,
     close_ticket_and_notify,
@@ -58,7 +61,6 @@ from ..schemas import (
     AdminDatabaseStatsResponse,
     AdminMetricsResponse,
     AdminParticipantResponse,
-    AdminPaymentResponse,
     AdminProcessStatsResponse,
     AdminRequestStatsResponse,
     AdminSlotResponse,
@@ -162,12 +164,29 @@ async def metrics(
 
 @staff_router.get("/slots", response_model=List[AdminSlotResponse])
 async def list_slots(
+    starts_after: Optional[datetime] = Query(default=None, alias="from"),
+    starts_before: Optional[datetime] = Query(default=None, alias="to"),
     staff: StaffActor = Depends(require_staff),
     schedule: ScheduleService = Depends(get_schedule_service),
 ) -> List[AdminSlotResponse]:
-    slots = await schedule.admin_schedule(
-        limit=100, teacher_telegram_id=None if staff.is_admin else staff.telegram_id
-    )
+    """Без параметров — ближайшие занятия (и недавние); с ``from``/``to`` —
+    архив за период, от новых к старым. Преподавателю — только свои."""
+    teacher = None if staff.is_admin else staff.telegram_id
+    if starts_after is None and starts_before is None:
+        slots = await schedule.admin_schedule(limit=100, teacher_telegram_id=teacher)
+    else:
+        if (
+            starts_after is None
+            or starts_before is None
+            or starts_after >= starts_before
+        ):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "Укажите период: from раньше to",
+            )
+        slots = await schedule.archive(
+            starts_after, starts_before, teacher_telegram_id=teacher, limit=100
+        )
     return [AdminSlotResponse.from_record(slot) for slot in slots]
 
 
@@ -512,28 +531,6 @@ async def list_users(
     return [AdminAccountResponse(**vars(account)) for account in accounts]
 
 
-@router.get("/payments", response_model=List[AdminPaymentResponse])
-async def list_payments(
-    limit: int = Query(default=50, ge=1, le=200),
-    repository: Any = Depends(get_repository),
-) -> List[AdminPaymentResponse]:
-    payments = await repository.list_admin_payments(limit)
-    return [
-        AdminPaymentResponse(
-            id=payment.id,
-            telegram_id=payment.telegram_id,
-            user_name=payment.user_name,
-            package_title=payment.package_title,
-            lessons=payment.lessons,
-            amount_rub=_rub(payment.amount_minor),
-            status=payment.status,
-            status_label=PAYMENT_STATUS_LABELS.get(payment.status, payment.status),
-            created_at=payment.created_at,
-        )
-        for payment in payments
-    ]
-
-
 # ---------- поддержка ----------
 
 
@@ -585,6 +582,26 @@ async def reply_support_ticket(
             status.HTTP_404_NOT_FOUND, "Открытое обращение с таким номером не найдено"
         )
     return AdminSupportActionResponse(status=result.value)
+
+
+@staff_router.post(
+    "/support/{ticket_id}/reopen", response_model=AdminSupportActionResponse
+)
+async def reopen_support_ticket(
+    ticket_id: int = _db_id(),
+    admin_id: int = Depends(require_staff_actor),
+    repository: Any = Depends(get_repository),
+) -> AdminSupportActionResponse:
+    """Открыть закрытое обращение снова (как «↩️ Открыть снова» в боте)."""
+    try:
+        reopened = await SupportService(repository, None, None).reopen(
+            ticket_id, admin_id
+        )
+    except SupportTicketStateError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    if reopened is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Обращение не найдено")
+    return AdminSupportActionResponse(status="open")
 
 
 @staff_router.post(

@@ -67,6 +67,21 @@ class AdminPayment:
     amount_minor: int
     status: str
     created_at: datetime
+    completed_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    refund_reason: Optional[str] = None
+    refunded_at: Optional[datetime] = None
+
+
+_ADMIN_PAYMENT_SELECT = """
+    SELECT payment.id, payment.telegram_id, profile.user_name,
+           payment.package_title, payment.lessons,
+           payment.amount_minor, payment.status, payment.created_at,
+           payment.completed_at, payment.expires_at, payment.refund_reason,
+           payment.refunded_at
+    FROM lesson_payments AS payment
+    LEFT JOIN bot_users AS profile ON profile.telegram_id = payment.telegram_id
+"""
 
 
 @dataclass(frozen=True)
@@ -219,23 +234,39 @@ class PostgresAdminMixin:
             )
         return [AdminAccount(**dict(record)) for record in records]
 
-    async def list_admin_payments(self, limit: int = 50) -> Sequence[AdminPayment]:
+    async def list_admin_payments(
+        self,
+        limit: int = 50,
+        status: Optional[str] = None,
+        telegram_id: Optional[int] = None,
+        before_id: Optional[int] = None,
+    ) -> Sequence[AdminPayment]:
+        """Платежи от новых к старым; фильтры — статус и участник,
+        страницы — ``before_id`` (id последнего показанного)."""
         _validate_limit(limit)
         async with self._pool.acquire() as connection:
             records = await connection.fetch(
-                """
-                SELECT payment.id, payment.telegram_id, profile.user_name,
-                       payment.package_title, payment.lessons,
-                       payment.amount_minor, payment.status, payment.created_at
-                FROM lesson_payments AS payment
-                LEFT JOIN bot_users AS profile
-                    ON profile.telegram_id = payment.telegram_id
-                ORDER BY payment.created_at DESC
+                _ADMIN_PAYMENT_SELECT
+                + """
+                WHERE ($2::TEXT IS NULL OR payment.status = $2)
+                  AND ($3::BIGINT IS NULL OR payment.telegram_id = $3)
+                  AND ($4::BIGINT IS NULL OR payment.id < $4)
+                ORDER BY payment.id DESC
                 LIMIT $1
                 """,
                 limit,
+                status,
+                telegram_id,
+                before_id,
             )
         return [AdminPayment(**dict(record)) for record in records]
+
+    async def get_admin_payment(self, payment_id: int) -> Optional[AdminPayment]:
+        async with self._pool.acquire() as connection:
+            record = await connection.fetchrow(
+                _ADMIN_PAYMENT_SELECT + "WHERE payment.id = $1", payment_id
+            )
+        return AdminPayment(**dict(record)) if record is not None else None
 
     async def list_admin_support_tickets(
         self, status: str = "open", limit: int = 50

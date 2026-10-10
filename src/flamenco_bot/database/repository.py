@@ -1888,6 +1888,8 @@ class PostgresRepository(
         include_cancelled: bool = False,
         starts_after: Optional[datetime] = None,
         teacher_telegram_id: Optional[int] = None,
+        starts_before: Optional[datetime] = None,
+        newest_first: bool = False,
     ) -> Sequence[ClassSlot]:
         """Слоты, начинающиеся после ``starts_after`` (по умолчанию — сейчас).
 
@@ -1908,7 +1910,10 @@ class PostgresRepository(
                   AND ($1::TEXT IS NULL OR slot.class_key = $1)
                   AND ($4::BOOLEAN OR slot.status <> 'cancelled')
                   AND ($5::BIGINT IS NULL OR slot.teacher_telegram_id = $5)
-                ORDER BY slot.starts_at
+                  AND ($6::TIMESTAMPTZ IS NULL OR slot.starts_at < $6)
+                ORDER BY
+                    CASE WHEN $7 THEN slot.starts_at END DESC,
+                    slot.starts_at
                 LIMIT $2
                 """,
                 class_key,
@@ -1916,6 +1921,8 @@ class PostgresRepository(
                 starts_after,
                 include_cancelled,
                 teacher_telegram_id,
+                starts_before,
+                newest_first,
             )
         return [ClassSlot.from_record(record) for record in records]
 

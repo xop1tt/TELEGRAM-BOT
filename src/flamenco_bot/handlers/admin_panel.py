@@ -77,6 +77,7 @@ from ..services import (
     SupportService,
     catalog_package,
 )
+from ..services.audit import AUDIT_ACTION_LABELS
 from ..services.history import BOOKING_STATUS_LABELS, booking_status
 from ..studio_time import format_studio_datetime, parse_admin_datetime, to_studio_time
 from .admin import (
@@ -1712,22 +1713,6 @@ async def ledger_command(message: Message, repository: Any) -> None:
     telegram_id = parse_int(parts[1]) if len(parts) == 2 else None
     text, reply_markup = await _operations_screen(repository, telegram_id, None)
     await message.answer(text, reply_markup=reply_markup)
-
-
-AUDIT_ACTION_LABELS = {
-    "admin_adjustment": "корректировка баланса",
-    "package_grant": "выдача абонемента",
-    "package_revoke": "отзыв абонемента",
-    "created": "создано занятие",
-    "rescheduled": "перенос занятия",
-    "capacity_changed": "вместимость",
-    "closed": "запись закрыта",
-    "reopened": "запись открыта",
-    "cancelled": "отмена занятия",
-    "refund_requested": "запрошен возврат оплаты",
-    "refunded": "возврат оплаты",
-    "refund_failed": "возврат отменён ЮKassa",
-}
 
 
 async def audit_screen(repository: Any) -> tuple[str, InlineKeyboardMarkup]:

@@ -132,6 +132,7 @@ class FakeRepository:
         )
         self.update_phone = AsyncMock()
         self.update_user_name = AsyncMock()
+        self.admin_update_profile = AsyncMock(return_value=True)
         self.search_profiles = AsyncMock(return_value=[self.profile])
         self.get_profile = AsyncMock(return_value=self.profile)
         self.list_class_slots = AsyncMock(return_value=[])

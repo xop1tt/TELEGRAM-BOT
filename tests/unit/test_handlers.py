@@ -483,15 +483,17 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
             await self.state.update_data(target_telegram_id=1001)
             self.message.text = "Новое имя"
             await save_participant_name(self.message, self.state, self.repository)
-            self.repository.update_user_name.assert_awaited_once_with(1001, "Новое имя")
+            # Правка — с записью в журнал действий в БД (staff_audit_log).
+            self.repository.admin_update_profile.assert_awaited_with(
+                1001, 1001, user_name="Новое имя"
+            )
 
             await self.state.set_state(AdminForm.waiting_for_phone_value)
             await self.state.update_data(target_telegram_id=1001)
             self.message.text = "+79991234567"
             await save_participant_phone(self.message, self.state, self.repository)
-            self.repository.update_phone.assert_awaited_once_with(
-                1001,
-                "+79991234567",
+            self.repository.admin_update_profile.assert_awaited_with(
+                1001, 1001, phone="+79991234567"
             )
             self.assertEqual(audit_factory.return_value.info.call_count, 3)
 

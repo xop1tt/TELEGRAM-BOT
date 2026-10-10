@@ -463,3 +463,5 @@ class AuditEvent:
     payment_id: Optional[int] = None
     delta: Optional[int] = None
     reason: Optional[str] = None
+    actor_name: Optional[str] = None
+    target_name: Optional[str] = None

@@ -48,6 +48,23 @@ class ScheduleService:
             teacher_telegram_id=teacher_telegram_id,
         )
 
+    async def archive(
+        self,
+        starts_after: datetime,
+        starts_before: datetime,
+        teacher_telegram_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> Sequence[ClassSlot]:
+        """Занятия за период (и прошедшие, и отменённые) — от новых к старым."""
+        return await self.repository.list_class_slots(
+            limit=limit,
+            include_cancelled=True,
+            starts_after=starts_after,
+            starts_before=starts_before,
+            teacher_telegram_id=teacher_telegram_id,
+            newest_first=True,
+        )
+
     async def get(self, slot_id: int) -> Optional[ClassSlot]:
         return await self.repository.get_class_slot(slot_id)
 

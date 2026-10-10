@@ -4,6 +4,7 @@
 другие внутренние поля никогда не попадают в ответ.
 """
 
+import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any, List, Literal, Mapping, Optional
 
@@ -868,6 +869,159 @@ class AdminPaymentResponse(BaseModel):
     status: str
     status_label: str
     created_at: datetime
+    completed_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    refund_reason: Optional[str] = None
+    refunded_at: Optional[datetime] = None
+
+    @classmethod
+    def from_record(cls, payment: Any) -> "AdminPaymentResponse":
+        from ..keyboards.user.cabinet import PAYMENT_STATUS_LABELS
+
+        return cls(
+            id=payment.id,
+            telegram_id=payment.telegram_id,
+            user_name=payment.user_name,
+            package_title=payment.package_title,
+            lessons=payment.lessons,
+            amount_rub=round(payment.amount_minor / 100, 2),
+            status=payment.status,
+            status_label=PAYMENT_STATUS_LABELS.get(payment.status, payment.status),
+            created_at=payment.created_at,
+            completed_at=payment.completed_at,
+            expires_at=payment.expires_at,
+            refund_reason=payment.refund_reason,
+            refunded_at=payment.refunded_at,
+        )
+
+
+class AdminPaymentsPage(BaseModel):
+    items: List[AdminPaymentResponse]
+    next_before_id: Optional[int] = None
+
+
+class AdminClientCardResponse(BaseModel):
+    profile: ProfileResponse
+    role: Optional[str] = None
+    email: Optional[str] = None
+    has_web_account: bool = False
+    packages: PackageSummaryResponse
+    upcoming: List[UserBookingResponse]
+
+
+class AdminClientProfileRequest(BaseModel):
+    user_name: Optional[str] = Field(default=None, max_length=200)
+    phone: Optional[str] = Field(default=None, max_length=64)
+
+
+class AdminGrantRequest(BaseModel):
+    package_key: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=300)
+    # Ключ формы: повторная отправка той же формы ничего не начислит.
+    idempotence_key: uuid.UUID
+
+
+class AdminRevokeRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class AdminCreditAdjustmentRequest(BaseModel):
+    delta: int = Field(ge=-100, le=100)
+    reason: str = Field(min_length=1, max_length=300)
+    idempotence_key: uuid.UUID
+
+
+class AdminRefundRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class AdminOperationResultResponse(BaseModel):
+    applied: bool
+    balance: Optional[int] = None
+    lessons: Optional[int] = None
+    status: Optional[str] = None
+    message: Optional[str] = None
+
+
+class AdminLedgerOperationResponse(HistoryOperationResponse):
+    """Операция для администратора: причина видна всегда, плюс участник и
+    кто выполнил."""
+
+    telegram_id: int
+    user_name: Optional[str] = None
+    actor_telegram_id: Optional[int] = None
+
+    @classmethod
+    def from_operation(cls, item: HistoryOperation) -> "AdminLedgerOperationResponse":
+        base = HistoryOperationResponse.from_operation(item).model_dump()
+        base["reason"] = item.entry.reason
+        return cls(
+            **base,
+            telegram_id=item.entry.telegram_id,
+            user_name=item.entry.user_name,
+            actor_telegram_id=item.entry.actor_telegram_id,
+        )
+
+
+class AdminLedgerPage(BaseModel):
+    items: List[AdminLedgerOperationResponse]
+    next_before_id: Optional[int] = None
+
+
+class AdminAuditEventResponse(BaseModel):
+    source: str
+    action: str
+    label: str
+    created_at: datetime
+    actor_telegram_id: Optional[int] = None
+    actor_name: Optional[str] = None
+    target_telegram_id: Optional[int] = None
+    target_name: Optional[str] = None
+    slot_id: Optional[int] = None
+    payment_id: Optional[int] = None
+    delta: Optional[int] = None
+    reason: Optional[str] = None
+
+
+class AdminAuditPage(BaseModel):
+    items: List[AdminAuditEventResponse]
+    # Передайте как before для следующей (более старой) страницы.
+    next_before: Optional[datetime] = None
+
+
+class AdminReconciliationMismatch(BaseModel):
+    telegram_id: int
+    user_name: str
+    lesson_credits: int
+    ledger_total: int
+    difference: int
+    ledger_entries: int
+    last_entry_at: Optional[datetime] = None
+
+
+class AdminReconciliationResponse(BaseModel):
+    checked_users: int
+    mismatched_users: int
+    mismatches: List[AdminReconciliationMismatch]
+
+    @classmethod
+    def from_result(cls, result: Any) -> "AdminReconciliationResponse":
+        return cls(
+            checked_users=result.checked_users,
+            mismatched_users=result.mismatched_users,
+            mismatches=[
+                AdminReconciliationMismatch(
+                    telegram_id=item.telegram_id,
+                    user_name=item.user_name,
+                    lesson_credits=item.lesson_credits,
+                    ledger_total=item.ledger_total,
+                    difference=item.difference,
+                    ledger_entries=item.ledger_entries,
+                    last_entry_at=item.last_entry_at,
+                )
+                for item in result.mismatches
+            ],
+        )
 
 
 class AdminSupportTicketResponse(BaseModel):

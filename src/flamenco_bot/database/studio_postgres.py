@@ -977,13 +977,19 @@ class PostgresStudioMixin:
             )
         return [LedgerEntry.from_record(record) for record in records]
 
-    async def list_audit_events(self, limit: int = 30) -> Sequence[AuditEvent]:
+    async def list_audit_events(
+        self, limit: int = 30, before: Optional[datetime] = None
+    ) -> Sequence[AuditEvent]:
+        """Журнал действий от новых к старым; ``before`` — для следующей
+        страницы (время последней показанной записи)."""
         if not 1 <= limit <= 100:
             raise ValueError("Количество событий должно быть от 1 до 100")
         async with self._pool.acquire() as connection:
             records = await connection.fetch(
                 """
-                SELECT * FROM (
+                SELECT audit.*, actor.user_name AS actor_name,
+                       target.user_name AS target_name
+                FROM (
                     SELECT 'ledger' AS source, ledger.entry_type AS action,
                            ledger.created_at, ledger.actor_telegram_id,
                            ledger.telegram_id AS target_telegram_id,
@@ -1006,11 +1012,24 @@ class PostgresStudioMixin:
                     WHERE event.event_type IN (
                         'refund_requested', 'refunded', 'refund_failed'
                     )
+                    UNION ALL
+                    SELECT 'staff', entry.action, entry.created_at,
+                           entry.actor_telegram_id, entry.target_telegram_id,
+                           CASE WHEN entry.details ? 'slot_id'
+                                THEN (entry.details->>'slot_id')::BIGINT END,
+                           NULL, NULL, NULL
+                    FROM staff_audit_log AS entry
                 ) AS audit
-                ORDER BY created_at DESC
+                LEFT JOIN bot_users AS actor
+                    ON actor.telegram_id = audit.actor_telegram_id
+                LEFT JOIN bot_users AS target
+                    ON target.telegram_id = audit.target_telegram_id
+                WHERE ($2::TIMESTAMPTZ IS NULL OR audit.created_at < $2)
+                ORDER BY audit.created_at DESC
                 LIMIT $1
                 """,
                 limit,
+                before,
             )
         return [
             AuditEvent(
@@ -1023,6 +1042,8 @@ class PostgresStudioMixin:
                 payment_id=record["payment_id"],
                 delta=record["delta"],
                 reason=record["reason"],
+                actor_name=record["actor_name"],
+                target_name=record["target_name"],
             )
             for record in records
         ]

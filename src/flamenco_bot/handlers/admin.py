@@ -1,6 +1,5 @@
 import logging
 from functools import lru_cache
-import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -39,6 +38,7 @@ from ..services import (
 from ..studio_time import format_studio_datetime
 from ..database.repository import InsufficientLessonCreditsError
 from ..keyboards.user.screens import button, markup
+from ..services.profile import normalize_phone
 
 
 logger = logging.getLogger("bot.handlers.admin")
@@ -257,7 +257,9 @@ async def save_participant_name(
         )
         return
 
-    await repository.update_user_name(telegram_id, user_name)
+    await repository.admin_update_profile(
+        telegram_id, message.from_user.id, user_name=user_name
+    )
     await state.clear()
     await message.answer("Имя участника обновлено.", reply_markup=admin_menu_keyboard())
     actions_logger().info(
@@ -276,12 +278,10 @@ async def save_participant_phone(
     if await _deny_non_admin(message, repository):
         await state.clear()
         return
-    phone = (message.text or "").strip()
-    if not re.fullmatch(r"\+?[0-9][0-9 ()-]{5,30}", phone):
-        await message.answer(
-            "Введите номер телефона: цифры, пробелы, скобки и дефисы "
-            "(от 7 до 32 символов)."
-        )
+    try:
+        phone = normalize_phone(message.text or "")
+    except ValueError as error:
+        await message.answer("{}.".format(error))
         return
 
     form_data = await state.get_data()
@@ -303,7 +303,9 @@ async def save_participant_phone(
         )
         return
 
-    await repository.update_phone(telegram_id, phone)
+    await repository.admin_update_profile(
+        telegram_id, message.from_user.id, phone=phone
+    )
     await state.clear()
     await message.answer(
         "Телефон участника обновлён.",

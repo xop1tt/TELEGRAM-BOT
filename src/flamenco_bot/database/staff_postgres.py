@@ -307,6 +307,54 @@ class PostgresStaffMixin:
                 )
         return role is not None
 
+    # ---------- профиль участника ----------
+
+    async def admin_update_profile(
+        self,
+        telegram_id: int,
+        actor_telegram_id: int,
+        user_name: Optional[str] = None,
+        phone: Optional[str] = None,
+    ) -> bool:
+        """Администратор меняет имя и/или телефон участника (значения уже
+        проверены сервисом); ``False`` — профиля нет. В журнал — что
+        изменено (без самих значений: это персональные данные)."""
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                if not await is_staff_admin(connection, actor_telegram_id):
+                    raise PermissionError("Менять профиль участника может только админ")
+                updated = await connection.fetchval(
+                    """
+                    UPDATE bot_users
+                    SET user_name = COALESCE($2, user_name),
+                        phone = COALESCE($3, phone)
+                    WHERE telegram_id = $1
+                    RETURNING telegram_id
+                    """,
+                    telegram_id,
+                    user_name,
+                    phone,
+                )
+                if updated is None:
+                    return False
+                await record_staff_action(
+                    connection,
+                    actor_telegram_id,
+                    "profile_updated",
+                    telegram_id,
+                    {
+                        "fields": [
+                            name
+                            for name, value in (
+                                ("user_name", user_name),
+                                ("phone", phone),
+                            )
+                            if value is not None
+                        ]
+                    },
+                )
+        return True
+
     # ---------- преподаватель занятия ----------
 
     async def set_slot_teacher(

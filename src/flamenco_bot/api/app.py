@@ -37,6 +37,7 @@ from .logging_config import configure_api_logging
 from .metrics import ProcessMetrics, RequestMetrics
 from .routers.admin import router as admin_router
 from .routers.admin import staff_router as admin_staff_router
+from .routers.admin_clients import router as admin_clients_router
 from .routers.auth import router as auth_router
 from .routers.bookings import router as bookings_router
 from .routers.classes import router as classes_router
@@ -104,6 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         WebConfig.YOOKASSA_SECRET_KEY,
         WebConfig.YOOKASSA_RETURN_URL,
     )
+    app.state.admin_payment_gateway = reconciliation_gateway
     reconciliation_task = start_reconciliation_task(
         PaymentService(repository, reconciliation_gateway),
         repository,
@@ -206,6 +208,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications_router)
     app.include_router(admin_staff_router)
     app.include_router(admin_router)
+    app.include_router(admin_clients_router)
 
     @app.get("/api/health")
     async def health() -> dict:
