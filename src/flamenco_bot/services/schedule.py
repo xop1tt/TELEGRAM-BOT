@@ -11,7 +11,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
-from ..database.repository import CLASS_KEYS, ClassSlot
+from ..class_catalog import ACTIVE_CLASS_KEYS
+from ..database.repository import ClassSlot
 from ..database.studio_models import (
     SlotCancellation,
     SlotEvent,
@@ -61,8 +62,8 @@ class ScheduleService:
         """``ValueError`` — неизвестный формат, время без пояса или в прошлом,
         вместимость вне 1–100 (проверяет репозиторий); ``LookupError`` —
         преподаватель не сотрудник."""
-        if class_key not in CLASS_KEYS:
-            raise ValueError("Неизвестный формат занятия")
+        if class_key not in ACTIVE_CLASS_KEYS:
+            raise ValueError("Неизвестный или скрытый формат занятия")
         slot = await self.repository.create_class_slot(
             class_key,
             starts_at,

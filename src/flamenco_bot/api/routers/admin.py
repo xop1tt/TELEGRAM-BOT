@@ -15,19 +15,23 @@
 
 import logging
 from datetime import datetime, timezone
+
+import asyncpg
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 
 from ...database.studio_models import SlotNotFoundError, SlotStateError
 from ...keyboards.user.cabinet import PAYMENT_STATUS_LABELS
-from ...services import AdminService, ScheduleService
+from ...services import AdminService, CatalogService, ScheduleService
 from ...services.support import (
     SupportReplyStatus,
     close_ticket_and_notify,
     deliver_support_reply,
 )
+from ...class_catalog import ClassFormat
 from ...database.staff_postgres import LastAdminError
+from ...payments.catalog import LessonPackage
 from ..dependencies import (
     StaffActor,
     get_admin_service,
@@ -40,7 +44,11 @@ from ..dependencies import (
     require_staff_actor,
 )
 from ..schemas import (
+    CATALOG_KEY_PATTERN,
     MAX_DB_ID,
+    AdminClassFormat,
+    AdminLessonPackage,
+    StudioRulesModel,
     AdminAccountResponse,
     AdminBackgroundTaskResponse,
     AdminCancelSlotRequest,
@@ -311,6 +319,134 @@ async def set_slot_teacher(
     if slot is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Занятие не найдено")
     return AdminSlotResponse.from_record(slot)
+
+
+# ---------- каталог и правила записи ----------
+
+
+def _catalog_error(error: Exception) -> HTTPException:
+    if isinstance(error, LookupError):
+        return HTTPException(status.HTTP_404_NOT_FOUND, str(error))
+    if isinstance(error, asyncpg.CheckViolationError):
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "Недопустимые значения полей"
+        )
+    return HTTPException(status.HTTP_409_CONFLICT, str(error))
+
+
+@router.get("/classes", response_model=List[AdminClassFormat])
+async def list_class_formats(
+    repository: Any = Depends(get_repository),
+) -> List[AdminClassFormat]:
+    return [
+        AdminClassFormat(**vars(item))
+        for item in await CatalogService(repository).class_formats()
+    ]
+
+
+@router.post(
+    "/classes", response_model=AdminClassFormat, status_code=status.HTTP_201_CREATED
+)
+async def create_class_format(
+    payload: AdminClassFormat,
+    admin_id: int = Depends(require_admin_actor),
+    repository: Any = Depends(get_repository),
+) -> AdminClassFormat:
+    try:
+        saved = await CatalogService(repository).save_class_format(
+            ClassFormat(**payload.model_dump()), admin_id, create=True
+        )
+    except (ValueError, LookupError, asyncpg.CheckViolationError) as error:
+        raise _catalog_error(error) from error
+    return AdminClassFormat(**vars(saved))
+
+
+@router.put("/classes/{key}", response_model=AdminClassFormat)
+async def update_class_format(
+    payload: AdminClassFormat,
+    key: str = Path(pattern=CATALOG_KEY_PATTERN),
+    admin_id: int = Depends(require_admin_actor),
+    repository: Any = Depends(get_repository),
+) -> AdminClassFormat:
+    if payload.key != key:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "Ключ направления менять нельзя"
+        )
+    try:
+        saved = await CatalogService(repository).save_class_format(
+            ClassFormat(**payload.model_dump()), admin_id, create=False
+        )
+    except (ValueError, LookupError, asyncpg.CheckViolationError) as error:
+        raise _catalog_error(error) from error
+    return AdminClassFormat(**vars(saved))
+
+
+@router.get("/packages", response_model=List[AdminLessonPackage])
+async def list_lesson_packages(
+    repository: Any = Depends(get_repository),
+) -> List[AdminLessonPackage]:
+    return [
+        AdminLessonPackage(**vars(item))
+        for item in await CatalogService(repository).packages()
+    ]
+
+
+@router.post(
+    "/packages",
+    response_model=AdminLessonPackage,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_lesson_package(
+    payload: AdminLessonPackage,
+    admin_id: int = Depends(require_admin_actor),
+    repository: Any = Depends(get_repository),
+) -> AdminLessonPackage:
+    try:
+        saved = await CatalogService(repository).save_package(
+            LessonPackage(**payload.model_dump()), admin_id, create=True
+        )
+    except (ValueError, LookupError, asyncpg.CheckViolationError) as error:
+        raise _catalog_error(error) from error
+    return AdminLessonPackage(**vars(saved))
+
+
+@router.put("/packages/{key}", response_model=AdminLessonPackage)
+async def update_lesson_package(
+    payload: AdminLessonPackage,
+    key: str = Path(pattern=CATALOG_KEY_PATTERN),
+    admin_id: int = Depends(require_admin_actor),
+    repository: Any = Depends(get_repository),
+) -> AdminLessonPackage:
+    if payload.key != key:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "Ключ абонемента менять нельзя"
+        )
+    try:
+        saved = await CatalogService(repository).save_package(
+            LessonPackage(**payload.model_dump()), admin_id, create=False
+        )
+    except (ValueError, LookupError, asyncpg.CheckViolationError) as error:
+        raise _catalog_error(error) from error
+    return AdminLessonPackage(**vars(saved))
+
+
+@router.get("/settings", response_model=StudioRulesModel)
+async def read_studio_rules(
+    repository: Any = Depends(get_repository),
+) -> StudioRulesModel:
+    return StudioRulesModel(**vars(await repository.get_studio_rules()))
+
+
+@router.put("/settings", response_model=StudioRulesModel)
+async def update_studio_rules(
+    payload: StudioRulesModel,
+    admin_id: int = Depends(require_admin_actor),
+    repository: Any = Depends(get_repository),
+) -> StudioRulesModel:
+    updated = await CatalogService(repository).update_rules(
+        admin_id, **payload.model_dump()
+    )
+    return StudioRulesModel(**vars(updated))
 
 
 # ---------- сотрудники ----------

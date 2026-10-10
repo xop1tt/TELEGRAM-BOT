@@ -13,6 +13,7 @@ from flamenco_bot.database.repository import (
     UserStatistics,
     UserProfile,
 )
+from flamenco_bot.studio_rules import StudioRules
 from flamenco_bot.database.studio_models import NotificationSettings, PackageSummary
 
 
@@ -143,6 +144,10 @@ class FakeRepository:
         self.list_bookings_for_telegram_id = AsyncMock(return_value=[])
         self.list_admin_ids = AsyncMock(return_value=[])
         self.list_staff = AsyncMock(return_value=[])
+        # Каталог: пустые выборки — кэш остаётся с начальными значениями.
+        self.list_class_formats = AsyncMock(return_value=[])
+        self.list_lesson_packages = AsyncMock(return_value=[])
+        self.get_studio_rules = AsyncMock(return_value=StudioRules())
         self.get_staff_role = AsyncMock(return_value=None)
         self.is_slot_teacher = AsyncMock(return_value=False)
         self.create_support_message = AsyncMock(return_value=(1, True))

@@ -14,7 +14,6 @@ from aiogram.types import CallbackQuery
 
 from ...class_catalog import CLASS_LABELS
 from ...database.repository import (
-    BOOKING_REBOOK_COOLDOWN,
     BookingCooldownError,
     BookingNotFoundError,
     CancellationWindowExpiredError,
@@ -27,6 +26,7 @@ from ...presentation import (
     booking_cancellation_hint,
     can_cancel,
     cancellation_hint,
+    deadline_text_genitive,
     format_class_time,
     plural,
     source_line,
@@ -45,6 +45,7 @@ from .screens import (
     slots_screen,
     upcoming_bookings,
 )
+from ...studio_rules import rules
 
 
 logger = logging.getLogger("bot.handlers.lessons")
@@ -89,8 +90,8 @@ async def book_class_slot(
     """Запись на занятие.
 
     ``book:`` — нажатие на занятие. Запись, которую можно отменить (до
-    начала больше 24 часов), подтверждается сразу: ошибку исправит отмена.
-    Запись меньше чем за 24 часа необратима — для неё сначала экран
+    начала больше окна отмены), подтверждается сразу: ошибку исправит отмена.
+    Запись позже окна отмены необратима — для неё сначала экран
     подтверждения. ``bookok:`` — подтверждённая запись.
     """
     parts = (callback.data or "").split(":")
@@ -108,9 +109,11 @@ async def book_class_slot(
             await callback.answer()
             await show(
                 callback,
-                "Записаться на занятие?\n\n{}\n{}\n\nДо начала меньше 24 часов — "
+                "Записаться на занятие?\n\n{}\n{}\n\nДо начала меньше {} — "
                 "отменить эту запись будет нельзя, занятие спишется с баланса.".format(
-                    CLASS_LABELS[slot.class_key], format_class_time(slot.starts_at)
+                    CLASS_LABELS[slot.class_key],
+                    format_class_time(slot.starts_at),
+                    deadline_text_genitive(),
                 ),
                 markup(
                     [button("Записаться", "bookok:{}:{}".format(parts[1], slot_id))],
@@ -249,13 +252,16 @@ async def request_booking_cancel(callback: CallbackQuery, repository: Any) -> No
         return
     if not booking.can_cancel():
         await callback.answer(
-            "Отменить уже нельзя — до начала меньше 24 часов.", show_alert=True
+            "Отменить уже нельзя — до начала меньше {}.".format(
+                deadline_text_genitive()
+            ),
+            show_alert=True,
         )
         text, reply_markup = await my_classes_screen(repository, telegram_id)
         await show(callback, text, reply_markup)
         return
 
-    cooldown_hours = int(BOOKING_REBOOK_COOLDOWN.total_seconds() // 3600)
+    cooldown_hours = rules().rebook_cooldown_hours
     text = (
         "Отменить запись?\n\n{}\n\nЗанятие вернётся на баланс. Записаться на это "
         "же занятие снова можно будет только через {} {}.".format(

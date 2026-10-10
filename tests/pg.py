@@ -10,8 +10,6 @@
 .github/workflows); без него такие тесты пропускаются.
 """
 
-import asyncio
-import atexit
 import os
 import time
 import unittest
@@ -23,6 +21,7 @@ import asyncpg
 from fastapi.testclient import TestClient
 
 from flamenco_bot.database.repository import PostgresRepository
+from flamenco_bot.services.catalog import CatalogService
 from tests.support import apply_migrations
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -33,11 +32,37 @@ _tables: list[str] = []
 _seeded: list[str] = []
 
 
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def _drop_stale_schemas(connection: Any) -> None:
+    """Схемы прошлых прогонов, чей процесс уже завершился.
+
+    Убирать свою схему при выходе ненадёжно: в atexit asyncio уже не может
+    резолвить адрес базы. Поэтому каждый прогон убирает чужие осиротевшие.
+    """
+    for record in await connection.fetch(
+        "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'test\\_unit\\_%'"
+    ):
+        name = record["nspname"]
+        parts = name.split("_")
+        if len(parts) >= 3 and parts[2].isdigit() and not _process_alive(int(parts[2])):
+            await connection.execute('DROP SCHEMA IF EXISTS "{}" CASCADE'.format(name))
+
+
 async def _prepare_schema() -> None:
     global _schema, _tables, _seeded
     schema = "test_unit_{}_{}".format(os.getpid(), time.time_ns())
     connection = await asyncpg.connect(DATABASE_URL)
     try:
+        await _drop_stale_schemas(connection)
         await connection.execute('CREATE SCHEMA "{}"'.format(schema))
         await connection.execute('SET search_path TO "{}"'.format(schema))
         pool = _SingleConnectionPool(connection)
@@ -63,23 +88,6 @@ async def _prepare_schema() -> None:
     finally:
         await connection.close()
     _schema, _tables, _seeded = schema, tables, seeded
-    atexit.register(_drop_schema)
-
-
-def _drop_schema() -> None:
-    async def drop() -> None:
-        connection = await asyncpg.connect(DATABASE_URL)
-        try:
-            await connection.execute(
-                'DROP SCHEMA IF EXISTS "{}" CASCADE'.format(_schema)
-            )
-        finally:
-            await connection.close()
-
-    try:
-        asyncio.run(drop())
-    except Exception:  # noqa: BLE001 — уборка при выходе не должна ронять прогон
-        pass
 
 
 class _SingleConnectionPool:
@@ -123,6 +131,9 @@ async def fresh_repository() -> PostgresRepository:
             )
     repository = PostgresRepository(pool)
     await repository.initialize()
+    # Кэш каталога и правил общий на процесс: возвращаем его к состоянию
+    # свежей базы, чтобы тест, менявший каталог, не влиял на следующие.
+    await CatalogService(repository).refresh()
     return repository
 
 

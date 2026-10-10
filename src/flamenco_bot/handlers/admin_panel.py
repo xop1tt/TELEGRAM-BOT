@@ -38,9 +38,9 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from ..class_catalog import CLASS_LABELS, CLASS_SHORT_LABELS
+from ..class_catalog import ACTIVE_CLASS_KEYS, CLASS_LABELS, CLASS_SHORT_LABELS
 from ..config import Config
-from ..database.repository import CLASS_KEYS, STAFF_ADMIN
+from ..database.repository import STAFF_ADMIN
 from ..database.studio_models import (
     PackageGrantNotFoundError,
     SlotNotFoundError,
@@ -60,6 +60,7 @@ from ..keyboards.user.screens import button, markup, parse_int, show
 from ..payments import PURCHASE_PACKAGES
 from ..presentation import (
     balance_line,
+    deadline_text,
     format_amount,
     format_class_time,
     format_date,
@@ -420,7 +421,9 @@ async def show_slot_participants(callback: CallbackQuery, repository: Any) -> No
 async def choose_new_slot_class(callback: CallbackQuery, repository: Any) -> None:
     if await _admin(callback, repository) is None:
         return
-    rows = [[button(CLASS_LABELS[key], "a:new:{}".format(key))] for key in CLASS_LABELS]
+    rows = [
+        [button(CLASS_LABELS[key], "a:new:{}".format(key))] for key in ACTIVE_CLASS_KEYS
+    ]
     rows.append([button("⬅️ К расписанию", "a:sch")])
     await show(callback, "Новое занятие. Выберите направление:", markup(*rows))
     await callback.answer()
@@ -433,7 +436,7 @@ async def start_new_slot(
     if await _admin(callback, repository) is None:
         return
     class_key = (callback.data or "").split(":")[2]
-    if class_key not in CLASS_KEYS:
+    if class_key not in ACTIVE_CLASS_KEYS:
         await callback.answer("Неизвестное направление.", show_alert=True)
         return
     await state.set_state(AdminForm.waiting_for_slot_time)
@@ -479,7 +482,7 @@ async def save_new_slot_capacity(message: Message, state: FSMContext, repository
         await message.answer("Введите число мест от 1 до 100.")
         return
     data = (await state.get_data()).get("new_slot") or {}
-    if data.get("class_key") not in CLASS_KEYS or not data.get("starts_at"):
+    if data.get("class_key") not in ACTIVE_CLASS_KEYS or not data.get("starts_at"):
         await state.clear()
         await message.answer("Не удалось продолжить — начните создание заново.")
         return
@@ -595,11 +598,12 @@ async def save_reschedule_time(message: Message, state: FSMContext, repository: 
     await message.answer(
         "Перенести занятие?\n\n{}\nБыло: {}\nСтанет: {}\n\nЗаписано: {}. Записи и "
         "баланс сохранятся; участники получат уведомление и смогут отменить "
-        "запись до нового начала без ограничения «за 24 часа».".format(
+        "запись до нового начала без ограничения «за {} до начала».".format(
             CLASS_LABELS[slot.class_key],
             format_studio_datetime(slot.starts_at),
             format_studio_datetime(new_starts_at),
             slot.booked_count,
+            deadline_text(),
         ),
         reply_markup=markup(
             [button("✅ Перенести", "a:smok:{}".format(slot.id))],

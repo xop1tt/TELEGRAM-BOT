@@ -10,9 +10,8 @@ from typing import Annotated, Any, List, Literal, Mapping, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from ..class_catalog import CLASS_LABELS
+from ..studio_rules import rules
 from ..database.repository import (
-    BOOKING_CANCELLATION_DEADLINE,
-    BOOKING_REBOOK_COOLDOWN,
     ClassBooking,
     ClassSlot,
     LessonPaymentHistoryItem,
@@ -161,6 +160,8 @@ class LessonPackageResponse(BaseModel):
     title: str
     lessons: int
     price_rub: int
+    # Срок действия с даты покупки, дней; None — бессрочно.
+    validity_days: Optional[int] = None
 
     @classmethod
     def from_package(cls, package: LessonPackage) -> "LessonPackageResponse":
@@ -169,6 +170,7 @@ class LessonPackageResponse(BaseModel):
             title=package.title,
             lessons=package.lessons,
             price_rub=package.price_rub,
+            validity_days=package.validity_days,
         )
 
 
@@ -269,19 +271,18 @@ class UserBookingResponse(BaseModel):
 
 
 class BookingRulesResponse(BaseModel):
-    """Правила записи для отображения клиенту — из тех же констант, по которым
-    их проверяет репозиторий, чтобы сайт не хардкодил свои числа."""
+    """Правила записи для отображения клиенту — те же, по которым их
+    проверяет репозиторий (studio_settings), чтобы сайт не хардкодил числа."""
 
     cancellation_deadline_hours: int
     rebook_cooldown_hours: int
 
     @classmethod
     def current(cls) -> "BookingRulesResponse":
+        current = rules()
         return cls(
-            cancellation_deadline_hours=int(
-                BOOKING_CANCELLATION_DEADLINE.total_seconds() // 3600
-            ),
-            rebook_cooldown_hours=int(BOOKING_REBOOK_COOLDOWN.total_seconds() // 3600),
+            cancellation_deadline_hours=current.cancellation_deadline_hours,
+            rebook_cooldown_hours=current.rebook_cooldown_hours,
         )
 
 
@@ -776,6 +777,38 @@ class StaffMemberResponse(BaseModel):
     phone: Optional[str]
     has_web_account: bool
     created_at: datetime
+
+
+CATALOG_KEY_PATTERN = "^[a-z][a-z0-9_]{1,31}$"
+
+
+class AdminClassFormat(BaseModel):
+    """Направление в админке (и запрос, и ответ)."""
+
+    key: str = Field(pattern=CATALOG_KEY_PATTERN)
+    title: str = Field(min_length=1, max_length=100)
+    short_title: str = Field(min_length=1, max_length=32)
+    description: str = Field(default="", max_length=1000)
+    level: str = Field(default="", max_length=100)
+    sort_order: int = Field(default=0, ge=-10000, le=10000)
+    is_active: bool = True
+
+
+class AdminLessonPackage(BaseModel):
+    """Абонемент в админке; цена — в целых рублях."""
+
+    key: str = Field(pattern=CATALOG_KEY_PATTERN)
+    title: str = Field(min_length=1, max_length=100)
+    lessons: int = Field(ge=1, le=100)
+    price_rub: int = Field(ge=1, le=10_000_000)
+    validity_days: Optional[int] = Field(default=None, ge=1, le=3650)
+    sort_order: int = Field(default=0, ge=-10000, le=10000)
+    is_active: bool = True
+
+
+class StudioRulesModel(BaseModel):
+    cancellation_deadline_hours: int = Field(ge=0, le=168)
+    rebook_cooldown_hours: int = Field(ge=0, le=168)
 
 
 class StaffRoleRequest(BaseModel):

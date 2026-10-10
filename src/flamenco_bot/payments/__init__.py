@@ -1,4 +1,10 @@
-from .catalog import LessonPackage, PURCHASE_OPTIONS, PURCHASE_PACKAGES
+from .catalog import (
+    ALL_PACKAGES,
+    LessonPackage,
+    PURCHASE_OPTIONS,
+    PURCHASE_PACKAGES,
+    apply_packages,
+)
 from .client import (
     PaymentProviderError,
     ProviderPayment,
@@ -7,6 +13,7 @@ from .client import (
 )
 
 __all__ = [
+    "ALL_PACKAGES",
     "LessonPackage",
     "PaymentProviderError",
     "ProviderPayment",
@@ -14,4 +21,5 @@ __all__ = [
     "PURCHASE_OPTIONS",
     "PURCHASE_PACKAGES",
     "YooKassaClient",
+    "apply_packages",
 ]

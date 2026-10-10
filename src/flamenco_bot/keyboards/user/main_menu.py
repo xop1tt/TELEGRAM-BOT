@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from ...class_catalog import (
+    ACTIVE_CLASS_KEYS,
     CLASS_DESCRIPTIONS,
     CLASS_KEYS_BY_LABEL,
     CLASS_LABELS,
@@ -14,8 +15,10 @@ from ...class_catalog import (
 from ...payments import PURCHASE_OPTIONS, PURCHASE_PACKAGES
 from ...presentation import (
     balance_line,
+    deadline_text,
     format_class_time,
     format_price,
+    validity_text,
     website_line,
 )
 from ...runtime.admin_access import get_staff_role
@@ -93,10 +96,16 @@ def about_text() -> str:
         "{}\n{}\nУровень: {}.".format(
             CLASS_LABELS[key], CLASS_DESCRIPTIONS[key], CLASS_LEVELS[key].lower()
         )
-        for key in CLASS_LABELS
+        for key in ACTIVE_CLASS_KEYS
     )
     prices = "\n".join(
-        "• {} — {}".format(package.title, format_price(package.price_rub))
+        "• {} — {}{}".format(
+            package.title,
+            format_price(package.price_rub),
+            ", действует {}".format(validity_text(package.validity_days))
+            if package.validity_days
+            else "",
+        )
         for package in PURCHASE_PACKAGES.values()
     )
     return (
@@ -107,7 +116,7 @@ def about_text() -> str:
         "Как записаться\n"
         "1. Купите абонемент в «💳 Покупки» — занятия появятся на балансе.\n"
         "2. В «📅 Расписание» выберите время — с баланса спишется 1 занятие.\n"
-        "3. Отменить запись можно не позднее чем за 24 часа до начала — "
+        "3. Отменить запись можно не позднее чем за {deadline} до начала — "
         "занятие вернётся на баланс. Если студия перенесла занятие, запись "
         "можно отменить до нового начала; если отменила — занятие вернётся "
         "на баланс автоматически.\n\n"
@@ -121,6 +130,7 @@ def about_text() -> str:
         directions,
         prices,
         "\n" + website_line() if website_line() else "",
+        deadline=deadline_text(),
     )
 
 

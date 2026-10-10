@@ -18,6 +18,7 @@ from .auth import (
     WeakPasswordError,
 )
 from .booking import BookingService
+from .catalog import CatalogService, start_catalog_refresh
 from .credits import CreditService
 from .history import HistoryOperation, HistoryService
 from .notifications import AdminNotifier, NotificationReport, NotificationService
@@ -48,10 +49,12 @@ from .support import (
 )
 
 __all__ = [
+    "start_catalog_refresh",
     "AdminNotifier",
     "AdminService",
     "AuthService",
     "BookingService",
+    "CatalogService",
     "CannotUnlinkOnlyLoginMethodError",
     "CheckoutFailedError",
     "CheckoutResult",

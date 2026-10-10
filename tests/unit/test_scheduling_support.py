@@ -228,6 +228,23 @@ class BookingCreditsAndCancellationTests(PostgresTestCase):
         # Кредит не должен уходить, если отмена отклонена.
         self.assertEqual(await repository.get_lesson_credits(1001), 0)
 
+    async def test_cancellation_window_comes_from_studio_settings(self):
+        repository, slot = await self._repository_with_slot(
+            starts_in=timedelta(hours=5)
+        )
+        await _grant_credits(repository, 1001, 1)
+        await repository.book_class_slot(slot.id, 1001)
+        # По умолчанию окно — 24 часа: за 5 часов отменить нельзя.
+        with self.assertRaises(CancellationWindowExpiredError):
+            await repository.cancel_class_slot_booking(slot.id, 1001)
+        # Администратор сократил окно до 2 часов — правило действует сразу,
+        # репозиторий читает его в транзакции отмены.
+        await sql(
+            repository, "UPDATE studio_settings SET cancellation_deadline_hours = 2"
+        )
+        self.assertTrue(await repository.cancel_class_slot_booking(slot.id, 1001))
+        self.assertEqual(await repository.get_lesson_credits(1001), 1)
+
     async def test_rebooking_right_after_cancellation_hits_cooldown(self):
         repository, slot = await self._repository_with_slot()
         await _grant_credits(repository, 1001, 2)

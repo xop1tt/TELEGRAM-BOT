@@ -21,7 +21,7 @@ from .config import Config
 from .database import PostgresRepository, is_database_configured
 from .database.repository import DatabaseUnavailableError, SchemaVersionError
 from .payments import YooKassaClient
-from .services import PaymentService
+from .services import CatalogService, PaymentService, start_catalog_refresh
 from .handlers import router
 from .keyboards.user.screens import payment_confirmed_notifier
 
@@ -101,10 +101,13 @@ async def main():
         dp.include_router(router)
 
         await repository.initialize()
+        # Направления, абонементы и правила записи — из базы (миграция 017).
+        await CatalogService(repository).refresh()
         lifecycle.admin_ids = repository.list_admin_ids
         heartbeat_path = heartbeat_path_from_env()
         await register_commands(bot, repository, logger)
         lifecycle_tasks = [
+            start_catalog_refresh(repository, logger),
             asyncio.create_task(
                 monitor_health(
                     repository,
@@ -112,7 +115,7 @@ async def main():
                     logger,
                     heartbeat_path=heartbeat_path,
                 )
-            )
+            ),
         ]
         reconciliation_task = start_reconciliation_task(
             PaymentService(repository, payment_gateway),

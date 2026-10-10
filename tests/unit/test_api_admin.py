@@ -208,6 +208,121 @@ class AdminApiTests(ApiTestBase):
             [entry.action for entry in audit], ["staff_removed", "staff_role_set"]
         )
 
+    # ---------- каталог и правила ----------
+
+    def test_catalog_is_editable_by_admin_and_shown_publicly(self):
+        self.register()
+        self.make_admin()
+        created = self.client.post(
+            "/api/admin/packages",
+            json={
+                "key": "pack_12",
+                "title": "Абонемент на 12 занятий",
+                "lessons": 12,
+                "price_rub": 9600,
+                "validity_days": 90,
+                "sort_order": 40,
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        public = {p["key"]: p for p in self.client.get("/api/packages").json()}
+        self.assertEqual(public["pack_12"]["validity_days"], 90)
+        self.assertEqual(public["pack_12"]["price_rub"], 9600)
+
+        # Скрытый абонемент не продаётся, но остаётся в админке.
+        hidden = dict(created.json(), is_active=False)
+        self.assertEqual(
+            self.client.put("/api/admin/packages/pack_12", json=hidden).status_code,
+            200,
+        )
+        self.assertNotIn(
+            "pack_12", {p["key"] for p in self.client.get("/api/packages").json()}
+        )
+        self.assertIn(
+            "pack_12",
+            {p["key"] for p in self.client.get("/api/admin/packages").json()},
+        )
+        self.assertEqual(
+            self.client.post("/api/admin/packages", json=hidden).status_code, 409
+        )
+        renamed = dict(hidden, key="other")
+        self.assertEqual(
+            self.client.put("/api/admin/packages/pack_12", json=renamed).status_code,
+            422,
+        )
+
+        # Новое направление — в /api/classes и доступно для занятий;
+        # скрытое — нет.
+        direction = {
+            "key": "tablao",
+            "title": "Табло-класс",
+            "short_title": "Табло",
+            "description": "Подготовка номера",
+            "level": "Для продолжающих",
+            "sort_order": 5,
+        }
+        self.assertEqual(
+            self.client.post("/api/admin/classes", json=direction).status_code, 201
+        )
+        classes = [c["key"] for c in self.client.get("/api/classes").json()]
+        self.assertEqual(classes[0], "tablao")
+        slot = self.client.post(
+            "/api/admin/slots",
+            json={"class_key": "tablao", "starts_at": self.future(), "capacity": 6},
+        )
+        self.assertEqual(slot.status_code, 201, slot.text)
+        self.assertEqual(slot.json()["class_label"], "Табло-класс")
+        self.client.put(
+            "/api/admin/classes/tablao", json=dict(direction, is_active=False)
+        )
+        self.assertNotIn(
+            "tablao", [c["key"] for c in self.client.get("/api/classes").json()]
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/admin/slots",
+                json={"class_key": "tablao", "starts_at": self.future(), "capacity": 6},
+            ).status_code,
+            422,
+        )
+        audit = [e.action for e in self.run_async(self.repository.list_staff_audit())]
+        self.assertIn("lesson_package_created", audit)
+        self.assertIn("class_format_updated", audit)
+
+    def test_booking_rules_are_set_by_admin(self):
+        self.register()
+        self.make_admin()
+        self.assertEqual(
+            self.client.get("/api/admin/settings").json(),
+            {"cancellation_deadline_hours": 24, "rebook_cooldown_hours": 12},
+        )
+        updated = self.client.put(
+            "/api/admin/settings",
+            json={"cancellation_deadline_hours": 6, "rebook_cooldown_hours": 0},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/bookings/rules").json(),
+            {"cancellation_deadline_hours": 6, "rebook_cooldown_hours": 0},
+        )
+        self.assertEqual(
+            self.client.put(
+                "/api/admin/settings",
+                json={"cancellation_deadline_hours": 500, "rebook_cooldown_hours": 0},
+            ).status_code,
+            422,
+        )
+
+    def test_catalog_and_settings_are_admin_only(self):
+        self.register()
+        self.make_admin(role="teacher")
+        for path in (
+            "/api/admin/classes",
+            "/api/admin/packages",
+            "/api/admin/settings",
+        ):
+            self.assertEqual(self.client.get(path).status_code, 403, path)
+
     # ---------- сводка и нагрузка ----------
 
     def test_metrics_report_requests_process_and_database(self):

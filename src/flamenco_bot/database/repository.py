@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 import asyncpg
 
+from ..class_catalog import ACTIVE_CLASS_KEYS, CLASS_KEYS
+from ..studio_rules import StudioRules, rules
 from .studio_models import CreditSource
 
 
@@ -22,27 +24,41 @@ logger = logging.getLogger("bot.database")
 # Схему создают и меняют миграции репозитория базы данных (DATABASE,
 # migrate.py); бот и API только проверяют при старте, что она не старее
 # нужной этому коду. Повышайте вместе с кодом, которому нужна новая миграция.
-REQUIRED_SCHEMA_VERSION = "016"
-CLASS_KEYS = {"beginner", "intermediate", "individual"}
+REQUIRED_SCHEMA_VERSION = "017"
 MAX_SUPPORT_MESSAGE_LENGTH = 2000
-# Бизнес-правила бронирования слотов, подтверждённые владельцем продукта
-# (не придуманы в коде, см. обсуждение аудита):
+# Бизнес-правила бронирования слотов, подтверждённые владельцем продукта:
 # - запись стоит 1 lesson_credit, отмена возвращает его;
-# - отменить можно не позднее чем за 24 часа до начала занятия;
+# - отменить можно не позднее чем за N часов до начала занятия;
 # - после отмены тот же пользователь не может повторно записаться на тот же
-#   слот в течение 12 часов (чтобы не злоупотреблять отменой/записью).
-BOOKING_CANCELLATION_DEADLINE = timedelta(hours=24)
-BOOKING_REBOOK_COOLDOWN = timedelta(hours=12)
+#   слот в течение M часов (чтобы не злоупотреблять отменой/записью).
+# N и M задаёт администратор (studio_settings, миграция 017); при записи и
+# отмене они читаются из базы в той же транзакции (_booking_rules).
+
+
+async def _booking_rules(connection: Any) -> StudioRules:
+    """Правила записи из базы — внутри транзакции записи или отмены."""
+    record = await connection.fetchrow(
+        "SELECT cancellation_deadline_hours, rebook_cooldown_hours "
+        "FROM studio_settings WHERE id"
+    )
+    if record is None:
+        return StudioRules()
+    return StudioRules(
+        cancellation_deadline_hours=record["cancellation_deadline_hours"],
+        rebook_cooldown_hours=record["rebook_cooldown_hours"],
+    )
 
 
 def booking_cancellation_deadline(
     starts_at: datetime,
     booked_at: Optional[datetime] = None,
     rescheduled_at: Optional[datetime] = None,
+    deadline: Optional[timedelta] = None,
 ) -> datetime:
     """До какого момента участник может отменить запись.
 
-    Обычно — не позднее чем за 24 часа до начала. Если студия перенесла
+    ``deadline`` — окно отмены; по умолчанию — текущее правило студии
+    (``studio_rules``). Если студия перенесла
     занятие после того, как участник записался, новое время участник не
     выбирал: такую запись можно отменить до нового начала (правило
     продуктового roadmap, этап 2 «Перенос»).
@@ -53,7 +69,9 @@ def booking_cancellation_deadline(
         and booked_at <= rescheduled_at
     ):
         return starts_at
-    return starts_at - BOOKING_CANCELLATION_DEADLINE
+    return starts_at - (
+        deadline if deadline is not None else rules().cancellation_deadline
+    )
 
 
 def check_cancellation_window(
@@ -61,10 +79,14 @@ def check_cancellation_window(
     booked_at: Optional[datetime],
     rescheduled_at: Optional[datetime],
     now: Optional[datetime] = None,
+    window: Optional[timedelta] = None,
 ) -> None:
     """``CancellationWindowExpiredError``, если отменять запись уже поздно."""
     current = now or datetime.now(timezone.utc)
-    deadline = booking_cancellation_deadline(starts_at, booked_at, rescheduled_at)
+    window = window if window is not None else rules().cancellation_deadline
+    deadline = booking_cancellation_deadline(
+        starts_at, booked_at, rescheduled_at, window
+    )
     if deadline == starts_at:
         if current >= starts_at:
             raise CancellationWindowExpiredError(
@@ -72,13 +94,15 @@ def check_cancellation_window(
             )
     elif current > deadline:
         raise CancellationWindowExpiredError(
-            "Отмена доступна не позднее чем за 24 часа до начала занятия"
+            "Отмена доступна не позднее чем за {} ч до начала занятия".format(
+                int(window.total_seconds() // 3600)
+            )
         )
 
 
 def _validate_slot(class_key: str, starts_at: datetime, capacity: int) -> None:
-    if class_key not in CLASS_KEYS:
-        raise ValueError("Неизвестный формат занятия")
+    if class_key not in ACTIVE_CLASS_KEYS:
+        raise ValueError("Неизвестный или скрытый формат занятия")
     if starts_at.tzinfo is None or starts_at.utcoffset() is None:
         raise ValueError("Время слота должно содержать часовой пояс")
     if starts_at <= datetime.now(timezone.utc):
@@ -560,9 +584,15 @@ async def is_staff_admin(connection: Any, telegram_id: int) -> bool:
 from .studio_postgres import PostgresStudioMixin  # noqa: E402
 from .admin_queries import PostgresAdminMixin  # noqa: E402
 from .staff_postgres import PostgresStaffMixin  # noqa: E402
+from .catalog_postgres import PostgresCatalogMixin  # noqa: E402
 
 
-class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin, PostgresStaffMixin):
+class PostgresRepository(
+    PostgresStudioMixin,
+    PostgresAdminMixin,
+    PostgresStaffMixin,
+    PostgresCatalogMixin,
+):
     def __init__(self, pool: Any) -> None:
         self._pool = pool
 
@@ -1921,8 +1951,11 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin, PostgresStaffM
                         class_key=slot["class_key"],
                         already_booked=True,
                     )
+                booking_rules = await _booking_rules(connection)
                 if existing is not None and existing["status"] == "cancelled":
-                    cooldown_ends_at = existing["updated_at"] + BOOKING_REBOOK_COOLDOWN
+                    cooldown_ends_at = (
+                        existing["updated_at"] + booking_rules.rebook_cooldown
+                    )
                     now = datetime.now(timezone.utc)
                     if now < cooldown_ends_at:
                         hours_left = ceil(
@@ -1956,8 +1989,8 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin, PostgresStaffM
                     """,
                     slot_id,
                     telegram_id,
-                    # Та же константа, что в проверке выше — правило в одном месте.
-                    BOOKING_REBOOK_COOLDOWN,
+                    # То же правило, что в проверке выше — из той же транзакции.
+                    booking_rules.rebook_cooldown,
                 )
                 if booking is None:
                     raise SlotUnavailableError("Не удалось подтвердить место")
@@ -2065,6 +2098,7 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin, PostgresStaffM
                     slot["starts_at"],
                     booking["booked_at"],
                     slot["rescheduled_at"],
+                    window=(await _booking_rules(connection)).cancellation_deadline,
                 )
 
                 await connection.execute(

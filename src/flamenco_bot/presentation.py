@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 from .config import Config
-from .database.repository import BOOKING_CANCELLATION_DEADLINE
+from .studio_rules import rules
 from .studio_time import to_studio_time
 
 
@@ -60,8 +60,29 @@ def format_price(rubles: int) -> str:
     return "{:,} ₽".format(rubles).replace(",", " ")
 
 
+def hours_text(hours: int) -> str:
+    """«24 часа», «1 час», «12 часов»."""
+    return "{} {}".format(hours, plural(hours, ("час", "часа", "часов")))
+
+
+def validity_text(days: int) -> str:
+    """Срок действия абонемента: «30 дней»."""
+    return "{} {}".format(days, plural(days, ("день", "дня", "дней")))
+
+
+def deadline_text() -> str:
+    """Окно отмены по текущему правилу студии: «за 24 часа»."""
+    return hours_text(rules().cancellation_deadline_hours)
+
+
+def deadline_text_genitive() -> str:
+    """То же после «меньше»: «меньше 24 часов», «меньше 1 часа»."""
+    hours = rules().cancellation_deadline_hours
+    return "{} {}".format(hours, plural(hours, ("часа", "часов", "часов")))
+
+
 def cancellation_deadline(starts_at: datetime) -> datetime:
-    return starts_at - BOOKING_CANCELLATION_DEADLINE
+    return starts_at - rules().cancellation_deadline
 
 
 def can_cancel(starts_at: datetime, now: Optional[datetime] = None) -> bool:
@@ -75,7 +96,9 @@ def cancellation_hint(starts_at: datetime, now: Optional[datetime] = None) -> st
         return "Отменить запись можно до {}.".format(
             format_class_time(cancellation_deadline(starts_at), now)
         )
-    return "Отменить эту запись уже нельзя — до начала меньше 24 часов."
+    return "Отменить эту запись уже нельзя — до начала меньше {}.".format(
+        deadline_text_genitive()
+    )
 
 
 def website_line(prefix: str = "Сайт студии") -> str:
@@ -100,7 +123,9 @@ def booking_cancellation_hint(booking: Any, now: Optional[datetime] = None) -> s
         if deadline >= booking.starts_at:
             return "Занятие перенесла студия — отменить запись можно до начала."
         return "Отменить запись можно до {}.".format(format_class_time(deadline, now))
-    return "Отменить эту запись уже нельзя — до начала меньше 24 часов."
+    return "Отменить эту запись уже нельзя — до начала меньше {}.".format(
+        deadline_text_genitive()
+    )
 
 
 PACKAGE_STATUS_LABELS = {

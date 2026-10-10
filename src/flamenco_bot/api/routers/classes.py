@@ -9,7 +9,12 @@ from typing import List
 
 from fastapi import APIRouter
 
-from ...class_catalog import CLASS_DESCRIPTIONS, CLASS_LABELS, CLASS_LEVELS
+from ...class_catalog import (
+    ACTIVE_CLASS_KEYS,
+    CLASS_DESCRIPTIONS,
+    CLASS_LABELS,
+    CLASS_LEVELS,
+)
 from ..schemas import ClassFormatResponse
 
 
@@ -21,9 +26,10 @@ async def list_classes() -> List[ClassFormatResponse]:
     return [
         ClassFormatResponse(
             key=key,
-            label=label,
+            label=CLASS_LABELS[key],
             description=CLASS_DESCRIPTIONS[key],
             level=CLASS_LEVELS[key],
         )
-        for key, label in CLASS_LABELS.items()
+        # Только действующие направления; скрытые — лишь в админке.
+        for key in ACTIVE_CLASS_KEYS
     ]

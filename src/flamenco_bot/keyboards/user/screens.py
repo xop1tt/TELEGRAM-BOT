@@ -39,6 +39,7 @@ from ...payments import LessonPackage, PURCHASE_PACKAGES
 from ...presentation import (
     PLACE_FORMS,
     balance_line,
+    deadline_text,
     format_class_time,
     format_price,
     lessons_count,
@@ -221,9 +222,9 @@ async def my_classes_screen(
     lines.extend(
         [
             "",
-            "Отменить запись можно не позднее чем за 24 часа до начала — "
+            "Отменить запись можно не позднее чем за {} до начала — "
             "занятие вернётся на баланс. Если занятие перенесла студия, "
-            "отменить запись можно до нового начала.",
+            "отменить запись можно до нового начала.".format(deadline_text()),
         ]
     )
     rows = [

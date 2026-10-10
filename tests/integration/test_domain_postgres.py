@@ -11,12 +11,11 @@ import os
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import asyncpg
 from tests.support import apply_migrations
 
-from flamenco_bot.database import repository as repository_module
 from flamenco_bot.database.repository import (
     BookingCooldownError,
     PostgresRepository,
@@ -222,10 +221,14 @@ class DomainPostgresTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(BookingCooldownError):
             await self.repo.book_class_slot(slot.id, 500)
 
-        # Если бы SQL держал свой литерал «12 hours», запись при нулевом
-        # кулдауне упала бы на ON CONFLICT ... WHERE (SlotUnavailableError).
-        with patch.object(repository_module, "BOOKING_REBOOK_COOLDOWN", timedelta(0)):
-            booking = await self.repo.book_class_slot(slot.id, 500)
+        # Пауза — из studio_settings (правило администратора). Если бы SQL
+        # держал свой литерал «12 hours», запись при нулевой паузе упала бы
+        # на ON CONFLICT ... WHERE (SlotUnavailableError).
+        async with self.pool.acquire() as connection:
+            await connection.execute(
+                "UPDATE studio_settings SET rebook_cooldown_hours = 0"
+            )
+        booking = await self.repo.book_class_slot(slot.id, 500)
         self.assertFalse(booking.already_booked)
         self.assertEqual(await self.repo.get_lesson_credits(500), 1)
 

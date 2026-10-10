@@ -26,7 +26,12 @@ from ..keyboards.user.screens import payment_confirmed_notifier
 from ..runtime.notifications import start_notification_worker
 from ..runtime.payment_reconciliation import start_reconciliation_task
 from ..runtime.security import AuthRateLimiter, SupportRateLimiter
-from ..services import AuthService, PaymentService
+from ..services import (
+    AuthService,
+    CatalogService,
+    PaymentService,
+    start_catalog_refresh,
+)
 from .config import WebConfig
 from .logging_config import configure_api_logging
 from .metrics import ProcessMetrics, RequestMetrics
@@ -63,6 +68,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     logger.info("API storage backend=postgres")
     await repository.initialize()
+    # Направления, абонементы и правила записи — из базы (миграция 017).
+    await CatalogService(repository).refresh()
 
     # Тот же бот, что и в main.py: нужен только чтобы рассылать уведомления
     # администраторам (AdminNotifier), не для приёма обновлений/polling.
@@ -110,10 +117,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         repository, bot, logger, WebConfig.LESSON_REMINDER_HOURS
     )
     app.state.notification_task = notification_task
+    catalog_task = start_catalog_refresh(repository, logger)
     try:
         yield
     finally:
-        background = [notification_task]
+        background = [notification_task, catalog_task]
         if reconciliation_task is not None:
             background.append(reconciliation_task)
         for task in background:
