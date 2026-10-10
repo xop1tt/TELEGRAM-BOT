@@ -240,13 +240,6 @@ class CreditAdjustmentHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("уже была применена", self.reply)
 
-    async def test_requires_postgres_storage(self):
-        self.repository.supports_durable_payments = False
-        await self._start("/credits_adjust 2002 +2 причина")
-
-        self.assertIn("PostgreSQL", self.reply)
-        self.assertIsNone(self.state.current_state)
-
 
 class CreditAuditHandlerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

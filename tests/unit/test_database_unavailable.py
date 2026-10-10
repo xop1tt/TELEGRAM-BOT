@@ -16,10 +16,10 @@ import asyncpg
 from aiogram import Bot, Dispatcher
 from aiogram.methods import AnswerCallbackQuery, SendMessage
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
-from fastapi.testclient import TestClient
 
 from flamenco_bot.api.app import DATABASE_UNAVAILABLE_DETAIL, create_app
-from flamenco_bot.database import InMemoryRepository, is_database_unavailable
+from flamenco_bot.database import is_database_unavailable
+from tests.pg import PostgresApiTestCase
 from flamenco_bot.database.repository import DatabaseUnavailableError
 from flamenco_bot.handlers import router
 from flamenco_bot.handlers.errors import SERVICE_UNAVAILABLE_TEXT
@@ -150,18 +150,16 @@ class BotDatabaseUnavailableTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(SERVICE_UNAVAILABLE_TEXT, texts)
 
 
-class ApiDatabaseUnavailableTests(unittest.TestCase):
+class ApiDatabaseUnavailableTests(PostgresApiTestCase):
     def setUp(self):
-        self.repository = InMemoryRepository()
+        super().setUp()
         app = create_app()
         app.state.repository = self.repository
         app.state.auth_service = AuthService(self.repository, "123456:test-token")
         app.state.bot = AsyncMock()
         app.state.support_limiter = SupportRateLimiter()
         app.state.auth_limiter = AuthRateLimiter()
-        self.client = TestClient(
-            app, base_url="https://testserver", raise_server_exceptions=False
-        )
+        self.client = self.make_client(app, raise_server_exceptions=False)
 
     def fail_with(self, method_name, error):
         setattr(self.repository, method_name, AsyncMock(side_effect=error))

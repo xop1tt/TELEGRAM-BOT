@@ -526,8 +526,6 @@ from .admin_queries import PostgresAdminMixin  # noqa: E402
 
 
 class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
-    supports_durable_payments = True
-
     def __init__(self, pool: Any) -> None:
         self._pool = pool
 

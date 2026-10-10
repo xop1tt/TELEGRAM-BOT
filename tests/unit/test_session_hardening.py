@@ -6,22 +6,28 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.database.repository import hash_session_token
 from flamenco_bot.services import AuthService
 from flamenco_bot.services import auth as auth_module
+from tests.pg import PostgresTestCase, fetch_all
 
 
-class SessionTokenHashingTests(unittest.IsolatedAsyncioTestCase):
+class SessionTokenHashingTests(PostgresTestCase):
     async def test_raw_token_is_not_stored_but_lookup_and_revocation_work(self):
-        repository = InMemoryRepository()
+        repository = self.repository
+        await repository.get_or_create_profile(555, "Анна", False)
         user = await repository.get_or_create_web_user_from_telegram(555, "Анна")
         token = "cookie-token-value"
         expires = datetime.now(timezone.utc) + timedelta(days=7)
 
         await repository.create_web_session(user.id, token, expires)
 
-        stored = list(repository._web_sessions)
+        stored = [
+            record["token_hash"]
+            for record in await fetch_all(
+                repository, "SELECT token_hash FROM web_sessions"
+            )
+        ]
         self.assertEqual(stored, [hashlib.sha256(token.encode()).hexdigest()])
         self.assertNotIn(token, stored)
         self.assertEqual(await repository.get_web_session_user_id(token), user.id)
@@ -37,7 +43,7 @@ class SessionTokenHashingTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
-class PasswordHashingOffEventLoopTests(unittest.IsolatedAsyncioTestCase):
+class PasswordHashingOffEventLoopTests(PostgresTestCase):
     async def test_hash_and_verify_run_outside_event_loop_thread(self):
         loop_thread = threading.get_ident()
         seen = {}
@@ -51,7 +57,7 @@ class PasswordHashingOffEventLoopTests(unittest.IsolatedAsyncioTestCase):
             seen["verify"] = threading.get_ident()
             return real_verify(password, stored)
 
-        service = AuthService(InMemoryRepository(), "123456:test-token")
+        service = AuthService(self.repository, "123456:test-token")
         with (
             patch.object(auth_module, "hash_password", tracking_hash),
             patch.object(auth_module, "verify_password", tracking_verify),

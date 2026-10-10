@@ -112,8 +112,6 @@ class FakeState:
 
 
 class FakeRepository:
-    supports_durable_payments = True
-
     def __init__(self):
         self.profile = UserProfile(
             telegram_id=1001,

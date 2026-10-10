@@ -12,7 +12,6 @@ from aiogram.exceptions import (
 )
 from aiogram.methods import SendMessage
 
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.runtime.notifications import (
     MAX_ATTEMPTS,
     NOTIFICATION_LOCK_ID,
@@ -21,6 +20,7 @@ from flamenco_bot.runtime.notifications import (
     retry_delay,
     run_notification_worker,
 )
+from tests.pg import PostgresTestCase, fetchrow, fetchval, sql
 
 
 LOGGER = SimpleNamespace(
@@ -36,9 +36,9 @@ class StopLoop(Exception):
     pass
 
 
-class NotificationDispatcherTests(unittest.IsolatedAsyncioTestCase):
+class NotificationDispatcherTests(PostgresTestCase):
     async def asyncSetUp(self):
-        self.repository = InMemoryRepository()
+        await super().asyncSetUp()
         await self.repository.get_or_create_profile(1001, "Анна", False)
         self.bot = SimpleNamespace(send_message=AsyncMock())
 
@@ -48,8 +48,12 @@ class NotificationDispatcherTests(unittest.IsolatedAsyncioTestCase):
         )
         return (await self.repository.claim_due_notifications())[0]
 
-    def _status(self, notification_id):
-        return self.repository._notifications[notification_id]["delivery_status"]
+    async def _status(self, notification_id):
+        return await fetchval(
+            self.repository,
+            "SELECT delivery_status FROM user_notifications WHERE id = $1",
+            notification_id,
+        )
 
     async def test_sent_notification_is_rendered_with_buttons(self):
         notification = await self._queue()
@@ -59,7 +63,7 @@ class NotificationDispatcherTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(status, "sent")
-        self.assertEqual(self._status(notification.id), "sent")
+        self.assertEqual(await self._status(notification.id), "sent")
         args, kwargs = self.bot.send_message.await_args
         self.assertEqual(args[0], 1001)
         self.assertIn("Баланс изменён студией", args[1])
@@ -78,7 +82,7 @@ class NotificationDispatcherTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(status, "failed")
-        self.assertEqual(self._status(notification.id), "failed")
+        self.assertEqual(await self._status(notification.id), "failed")
 
     async def test_rate_limit_and_network_errors_are_retried_later(self):
         notification = await self._queue()
@@ -90,11 +94,20 @@ class NotificationDispatcherTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(status, "retry")
-        data = self.repository._notifications[notification.id]
+        data = await fetchrow(
+            self.repository,
+            "SELECT delivery_status, next_attempt_at FROM user_notifications "
+            "WHERE id = $1",
+            notification.id,
+        )
         self.assertEqual(data["delivery_status"], "pending")
         self.assertEqual(data["next_attempt_at"], now + timedelta(seconds=30))
 
-        data["next_attempt_at"] = datetime.now(timezone.utc)
+        await sql(
+            self.repository,
+            "UPDATE user_notifications SET next_attempt_at = NOW() WHERE id = $1",
+            notification.id,
+        )
         notification = (await self.repository.claim_due_notifications())[0]
         self.bot.send_message.side_effect = TelegramNetworkError(METHOD, "timeout")
         self.assertEqual(

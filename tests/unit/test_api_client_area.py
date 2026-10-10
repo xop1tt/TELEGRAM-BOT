@@ -5,13 +5,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
 
 from flamenco_bot.api.app import create_app
-from flamenco_bot.database import InMemoryRepository
-from flamenco_bot.database.repository import UserProfile
 from flamenco_bot.runtime.security import AuthRateLimiter, SupportRateLimiter
 from flamenco_bot.services import AuthService
+from tests.pg import PostgresApiTestCase, set_credits
 
 
 BOT_TOKEN = "123456:test-token"
@@ -35,16 +33,16 @@ def make_telegram_payload(telegram_id=555, first_name="Анна", auth_date=None
     }
 
 
-class ClientAreaApiTests(unittest.TestCase):
+class ClientAreaApiTests(PostgresApiTestCase):
     def setUp(self):
-        self.repository = InMemoryRepository()
+        super().setUp()
         app = create_app()
         app.state.repository = self.repository
         app.state.auth_service = AuthService(self.repository, BOT_TOKEN)
         app.state.bot = AsyncMock()
         app.state.support_limiter = SupportRateLimiter()
         app.state.auth_limiter = AuthRateLimiter()
-        self.client = TestClient(app, base_url="https://testserver")
+        self.client = self.make_client(app)
 
     def _login_with_telegram(self, telegram_id=555):
         response = self.client.post(
@@ -74,20 +72,10 @@ class ClientAreaApiTests(unittest.TestCase):
 
     def _grant_credits(self, telegram_id, credits=1):
         """Выдаёт lesson_credits — бронирование теперь списывает их напрямую."""
-        profile = self.repository._profiles[telegram_id]
-        self.repository._profiles[telegram_id] = UserProfile(
-            telegram_id=profile.telegram_id,
-            phone=profile.phone,
-            user_name=profile.user_name,
-            registered_at=profile.registered_at,
-            is_admin=profile.is_admin,
-            lesson_credits=credits,
-        )
+        self.run_async(set_credits(self.repository, telegram_id, credits))
 
     def test_schedule_is_public_and_lists_upcoming_slots(self):
-        import asyncio
-
-        slot = asyncio.run(self._create_open_slot())
+        slot = self.run_async(self._create_open_slot())
         response = self.client.get("/api/schedule")
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -129,9 +117,7 @@ class ClientAreaApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
 
     def test_booking_confirms_slot_and_lists_it_under_me(self):
-        import asyncio
-
-        slot = asyncio.run(self._create_open_slot())
+        slot = self.run_async(self._create_open_slot())
         self._login_with_telegram(telegram_id=777)
         self._grant_credits(777)
 
@@ -147,9 +133,7 @@ class ClientAreaApiTests(unittest.TestCase):
         self.assertEqual(mine.json()[0]["slot_id"], slot.id)
 
     def test_booking_rejects_full_slot(self):
-        import asyncio
-
-        slot = asyncio.run(self._create_open_slot(capacity=1))
+        slot = self.run_async(self._create_open_slot(capacity=1))
         self._login_with_telegram(telegram_id=111)
         self._grant_credits(111)
         self.client.post("/api/bookings", json={"slot_id": slot.id})

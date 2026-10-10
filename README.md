@@ -84,7 +84,7 @@ Telegram-бот для студии фламенко: профиль участ�
 │   ├── commands/            # Команды Telegram
 │   ├── class_catalog.py     # Названия форматов и расписание
 │   ├── config/              # Конфигурация из окружения
-│   ├── database/            # Репозиторий данных (PostgreSQL и in-memory)
+│   ├── database/            # Репозиторий данных (PostgreSQL)
 │   ├── handlers/            # Команды, администрация и поддержка
 │   ├── keyboards/
 │   │   ├── admin/           # Клавиатуры администратора
@@ -328,10 +328,10 @@ backup/restore-план. Для частного CA PostgreSQL примонти�
 Полный шаблон находится в [`env.example`](https://github.com/xop1tt/TELEGRAM-BOT/blob/main/env.example).
 
 > [!WARNING]
-> Настройки production требуют `DATABASE_URL` и `DATABASE_SSL_MODE=verify-full`.
-> В локальной разработке без БД допускается временное хранилище в памяти: после
-> остановки процесса профили и заявки из него теряются, админ-доступ и checkout
-> в таком режиме недоступны.
+> Бот и API не стартуют без `DATABASE_URL` ни в каком окружении: хранилища в
+> памяти больше нет. Для разработки поднимите PostgreSQL (например,
+> `docker run -p 5432:5432 -e POSTGRES_PASSWORD=… postgres:17`) и примените
+> миграции из `DATABASE`. Production требует `DATABASE_SSL_MODE=verify-full`.
 
 ### Права администратора
 
@@ -631,20 +631,24 @@ python -m unittest discover -s tests -v
 python -m unittest discover -s tests/unit -v
 ```
 
-Интеграционный тест PostgreSQL пропускается, если не задан `TEST_DATABASE_URL`.
-Эта переменная намеренно отдельная от `DATABASE_URL`, чтобы тест не использовал
-рабочую БД. Тест создаёт временную схему и удаляет её после выполнения; указанная
-база должна быть выделенной тестовой, а пользователь — иметь право создавать и
-удалять схемы. Схему во временной схеме создаёт `migrate.py` репозитория
+Тесты, которым нужна база (а это большинство unit-тестов и все
+интеграционные), пропускаются, если не задан `TEST_DATABASE_URL`. Эта
+переменная намеренно отдельная от `DATABASE_URL`, чтобы тесты не трогали
+рабочую БД. Тесты создают временные схемы и удаляют их после выполнения;
+указанная база должна быть выделенной тестовой, а пользователь — иметь право
+создавать и удалять схемы. Unit-тесты применяют миграции один раз на процесс
+(`tests/pg.py`) и очищают таблицы перед каждым тестом. Схему во временной схеме создаёт `migrate.py` репозитория
 `DATABASE`: по умолчанию он берётся из соседней папки `DATABASE`, иначе
 укажите путь в `DATABASE_DIR`.
 
 ```bash
-TEST_DATABASE_URL='postgresql://bot_test:change-me@localhost:5432/flamenco_test' \
-  python -m unittest tests.integration.test_postgres_integration -v
+docker run -d --name flamenco-test-pg -p 55432:5432 \
+  -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test postgres:17
+TEST_DATABASE_URL='postgresql://test:test@localhost:55432/test' \
+  python -m unittest discover -s tests -v
 ```
 
-Unit-тесты не требуют сетевого подключения к Telegram или рабочей базе.
+Тесты не требуют сетевого подключения к Telegram или рабочей базе.
 
 ## 🧰 Форматирование и линтер
 

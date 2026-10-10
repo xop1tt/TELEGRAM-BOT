@@ -23,11 +23,6 @@ class CreditService:
         self.repository = repository
         self.max_adjustment = max_adjustment
 
-    @property
-    def available(self) -> bool:
-        """Корректировка и сверка требуют постоянного хранилища (PostgreSQL)."""
-        return bool(getattr(self.repository, "supports_durable_payments", False))
-
     def validate_adjustment(self, delta: int, reason: str) -> str:
         """Возвращает нормализованную причину или бросает ``ValueError``.
 

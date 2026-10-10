@@ -100,9 +100,8 @@ async def pay_for_package(
     payment_service = PaymentService(repository, payment_gateway)
     if not payment_service.checkout_available:
         logger.warning(
-            "Purchase checkout unavailable configured=%s durable_storage=%s",
+            "Purchase checkout unavailable configured=%s",
             payment_gateway.is_configured,
-            getattr(repository, "supports_durable_payments", False),
         )
         await callback.answer()
         await show(

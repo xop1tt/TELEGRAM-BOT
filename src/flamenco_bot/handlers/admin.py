@@ -934,10 +934,6 @@ async def start_credit_adjustment(
     if admin_id is None:
         await _deny_non_admin(message, repository)
         return
-    service = _credit_service(repository)
-    if not service.available:
-        await message.answer("Корректировка баланса требует PostgreSQL.")
-        return
     parts = (message.text or "").split(maxsplit=3)
     if (
         len(parts) != 4
@@ -1138,9 +1134,6 @@ async def audit_credit_balances(message: Message, repository: Any) -> None:
         await _deny_non_admin(message, repository)
         return
     service = _credit_service(repository)
-    if not service.available:
-        await message.answer("Сверка баланса требует PostgreSQL.")
-        return
     result = await service.reconcile(CREDIT_AUDIT_LIMIT)
     if not result.mismatched_users:
         await message.answer(

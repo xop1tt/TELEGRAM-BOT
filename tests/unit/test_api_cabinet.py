@@ -1,24 +1,21 @@
 """Клиентский Web API личного кабинета: обзор, абонементы, история,
 уведомления, расписание, переписка поддержки, вход через бота."""
 
-import asyncio
 import hashlib
 import hmac
 import time
 import unittest
 import uuid
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
 
 from flamenco_bot.api.app import create_app
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.payments import YooKassaClient
 from flamenco_bot.runtime.security import AuthRateLimiter, SupportRateLimiter
 from flamenco_bot.services import AuthService
+from tests.pg import PostgresApiTestCase, make_admin
 
 BOT_TOKEN = "123456:test-token"
 USER_ID = 1001
@@ -38,9 +35,9 @@ def parse_api_time(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-class ApiCabinetTests(unittest.TestCase):
+class ApiCabinetTests(PostgresApiTestCase):
     def setUp(self):
-        self.repository = InMemoryRepository()
+        super().setUp()
         app = create_app()
         app.state.repository = self.repository
         app.state.auth_service = AuthService(self.repository, BOT_TOKEN)
@@ -49,14 +46,12 @@ class ApiCabinetTests(unittest.TestCase):
         app.state.support_limiter = SupportRateLimiter()
         app.state.auth_limiter = AuthRateLimiter(max_attempts=100)
         app.state.payment_gateway = YooKassaClient("", "", "")
-        self.client = TestClient(app, base_url="https://testserver")
+        self.client = self.make_client(app)
         self.call(self.repository.get_or_create_profile(ADMIN_ID, "Админ", False))
-        self.repository._profiles[ADMIN_ID] = replace(
-            self.repository._profiles[ADMIN_ID], is_admin=True
-        )
+        self.run_async(make_admin(self.repository, ADMIN_ID))
 
     def call(self, coroutine):
-        return asyncio.run(coroutine)
+        return self.run_async(coroutine)
 
     def login(self, telegram_id=USER_ID):
         response = self.client.post("/api/auth/telegram", json=signed(telegram_id))

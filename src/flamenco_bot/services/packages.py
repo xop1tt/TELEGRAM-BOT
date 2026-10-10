@@ -12,7 +12,6 @@ import uuid
 from typing import Any, Optional
 
 from ..database.studio_models import (
-    DurableStorageRequiredError,
     PackageGrantResult,
     PackageRevokeResult,
     PackageSummary,
@@ -38,11 +37,6 @@ class PackageService:
     def __init__(self, repository: Any) -> None:
         self.repository = repository
 
-    @property
-    def admin_operations_available(self) -> bool:
-        """Выдача и отзыв — финансовые операции: только с PostgreSQL."""
-        return bool(getattr(self.repository, "supports_durable_payments", False))
-
     async def summary(self, telegram_id: int) -> PackageSummary:
         return await self.repository.get_package_summary(telegram_id)
 
@@ -59,8 +53,6 @@ class PackageService:
         ``ValueError`` — неизвестный абонемент или пустая причина;
         ``PermissionError`` — не администратор; ``LookupError`` — нет профиля.
         """
-        if not self.admin_operations_available:
-            raise DurableStorageRequiredError("Выдача абонемента требует PostgreSQL")
         package = catalog_package(package_key)
         if package is None:
             raise ValueError("Неизвестный абонемент")
@@ -86,8 +78,6 @@ class PackageService:
         reason: str,
         admin_telegram_id: int,
     ) -> PackageRevokeResult:
-        if not self.admin_operations_available:
-            raise DurableStorageRequiredError("Отзыв абонемента требует PostgreSQL")
         return await self.repository.revoke_lesson_package_grant(
             grant_id, reason, admin_telegram_id
         )

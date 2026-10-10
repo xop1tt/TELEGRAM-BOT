@@ -1,4 +1,4 @@
-"""Админ-панель в боте поверх настоящей логики (временное хранилище).
+"""Админ-панель в боте поверх настоящей логики (PostgreSQL).
 
 Проверяется: права на каждое нажатие, экраны подтверждения опасных
 действий (и их срок), отмена занятия с возвратом и уведомлениями,
@@ -8,29 +8,24 @@
 
 import time
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.handlers import admin_panel
 from flamenco_bot.handlers.states import AdminForm
 from flamenco_bot.studio_time import to_studio_time
+from tests.pg import PostgresTestCase, fetchval, make_admin, set_credits
 from tests.support import FakeCallback, FakeMessage, FakeState, callback_data
 
 ADMIN_ID = 77
 USER_ID = 1001
 
 
-class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
+class AdminPanelTests(PostgresTestCase):
     async def asyncSetUp(self):
-        self.repository = InMemoryRepository()
-        self.repository.supports_durable_payments = True  # финансовые операции
-        await self.repository.get_or_create_profile(ADMIN_ID, "Админ", False)
-        self.repository._profiles[ADMIN_ID] = replace(
-            self.repository._profiles[ADMIN_ID], is_admin=True
-        )
+        await super().asyncSetUp()
+        await make_admin(self.repository, ADMIN_ID)
         await self.repository.get_or_create_profile(USER_ID, "Анна", False)
         self.state = FakeState()
         self.logger_patch = patch("flamenco_bot.handlers.admin_panel.actions_logger")
@@ -38,6 +33,7 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         self.logger_patch.stop()
+        await super().asyncTearDown()
 
     def press(self, data, telegram_id=ADMIN_ID):
         return FakeCallback(data, telegram_id=telegram_id)
@@ -48,11 +44,12 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _book(self, slot_id, telegram_id=USER_ID, credits=1):
-        profile = self.repository._profiles.get(telegram_id)
-        if profile is None:
-            await self.repository.get_or_create_profile(telegram_id, "Участник", False)
-            profile = self.repository._profiles[telegram_id]
-        self.repository._set_credits(telegram_id, profile.lesson_credits + credits)
+        profile = await self.repository.get_or_create_profile(
+            telegram_id, "Участник", False
+        )
+        await set_credits(
+            self.repository, telegram_id, profile.lesson_credits + credits
+        )
         return await self.repository.book_class_slot(slot_id, telegram_id)
 
     # --- права -------------------------------------------------------------
@@ -91,7 +88,7 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
                     "Доступно только администратору студии.", show_alert=True
                 )
                 callback.message.edit_text.assert_not_awaited()
-        self.assertEqual(self.repository._class_slots[slot.id].status, "open")
+        self.assertEqual((await self.repository.get_class_slot(slot.id)).status, "open")
 
     async def test_admin_text_commands_require_admin(self):
         message = FakeMessage(text="/slots", telegram_id=USER_ID)
@@ -125,14 +122,16 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
         text, markup = first.screen
         self.assertIn("Отменить занятие?", text)
         self.assertIn("Каждому вернётся 1 занятие", text)
-        self.assertEqual(self.repository._class_slots[slot.id].status, "open")
+        self.assertEqual((await self.repository.get_class_slot(slot.id)).status, "open")
 
         confirm = self.press("a:sxok:{}".format(slot.id))
         await admin_panel.confirm_slot_cancel(confirm, self.repository, self.state)
 
         text, _ = confirm.screen
         self.assertIn("Возвращено занятий: 1", text)
-        self.assertEqual(self.repository._class_slots[slot.id].status, "cancelled")
+        self.assertEqual(
+            (await self.repository.get_class_slot(slot.id)).status, "cancelled"
+        )
         self.assertEqual(await self.repository.get_lesson_credits(USER_ID), 1)
         notices = await self.repository.list_notifications(USER_ID)
         kinds = [n.kind for n in notices]
@@ -173,7 +172,7 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
         await admin_panel.confirm_slot_cancel(confirm, self.repository, self.state)
 
         self.assertIn("устарело", confirm.answer.await_args.args[0])
-        self.assertEqual(self.repository._class_slots[slot.id].status, "open")
+        self.assertEqual((await self.repository.get_class_slot(slot.id)).status, "open")
 
     async def test_confirmation_for_other_slot_is_not_reused(self):
         first, second = await self._slot(days=2), await self._slot(days=3)
@@ -182,7 +181,9 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
         )
         confirm = self.press("a:sxok:{}".format(second.id))
         await admin_panel.confirm_slot_cancel(confirm, self.repository, self.state)
-        self.assertEqual(self.repository._class_slots[second.id].status, "open")
+        self.assertEqual(
+            (await self.repository.get_class_slot(second.id)).status, "open"
+        )
 
     # --- перенос, создание, закрытие ---------------------------------------
 
@@ -204,7 +205,7 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
         await admin_panel.confirm_reschedule(confirm, self.repository, self.state)
 
         self.assertIn("Уведомлений участникам: 1", confirm.screen[0])
-        moved = self.repository._class_slots[slot.id]
+        moved = await self.repository.get_class_slot(slot.id)
         self.assertEqual(to_studio_time(moved.starts_at).strftime("%H:%M"), "20:30")
         kinds = [n.kind for n in await self.repository.list_notifications(USER_ID)]
         self.assertEqual(kinds.count("slot_rescheduled"), 1)
@@ -236,7 +237,9 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
         await admin_panel.confirm_new_slot(confirm, self.repository, self.state)
 
         self.assertIn("Занятие создано", confirm.screen[0])
-        created = list(self.repository._class_slots.values())[-1]
+        created = await self.repository.get_class_slot(
+            await fetchval(self.repository, "SELECT MAX(id) FROM lesson_slots")
+        )
         self.assertEqual((created.class_key, created.capacity), ("intermediate", 8))
 
     async def test_close_and_reopen(self):
@@ -244,10 +247,12 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
         await admin_panel.toggle_slot(
             self.press("a:sc:{}".format(slot.id)), self.repository
         )
-        self.assertEqual(self.repository._class_slots[slot.id].status, "closed")
+        self.assertEqual(
+            (await self.repository.get_class_slot(slot.id)).status, "closed"
+        )
         reopen = self.press("a:so:{}".format(slot.id))
         await admin_panel.toggle_slot(reopen, self.repository)
-        self.assertEqual(self.repository._class_slots[slot.id].status, "open")
+        self.assertEqual((await self.repository.get_class_slot(slot.id)).status, "open")
         self.assertIn("снова открыта", reopen.screen[0])
 
     # --- клиенты, абонементы, баланс --------------------------------------

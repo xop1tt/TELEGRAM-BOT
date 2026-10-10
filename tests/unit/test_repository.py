@@ -6,14 +6,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.database.repository import (
     DatabaseUnavailableError,
     REQUIRED_SCHEMA_VERSION,
     PostgresRepository,
     SchemaVersionError,
+    hash_session_token,
     is_database_configured,
 )
+from tests.pg import PostgresTestCase, fetchval, sql
 from tests.support import FakePool
 
 # Публичный корневой сертификат Supabase (не секрет).
@@ -250,8 +251,12 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
             is_database_configured("postgresql://bot@db.studio.internal/flamenco_bot")
         )
 
-    async def test_in_memory_repository_supports_profiles_and_requests(self):
-        repository = InMemoryRepository()
+
+class RepositoryBehaviourTests(PostgresTestCase):
+    """Поведение репозитория на настоящей базе: сессии, платежи, возвраты."""
+
+    async def test_profile_round_trip_keeps_name_phone_and_admin_flag(self):
+        repository = self.repository
         profile = await repository.get_or_create_profile(1001, "Анна", False)
         self.assertEqual(profile.user_name, "Анна")
         await repository.update_phone(1001, "+79990000000")
@@ -261,41 +266,45 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.user_name, "Анна Мария")
         self.assertFalse(updated.is_admin)
 
-        request = await repository.create_lesson_request(1001, "booking", "вечером")
-        self.assertEqual(request.id, 1)
-        self.assertEqual(len(await repository.list_pending_requests()), 1)
-        self.assertTrue(await repository.complete_request(1))
-        self.assertEqual(await repository.list_pending_requests(), [])
-        await repository.close()
-
-    async def test_in_memory_web_session_round_trip_and_expiry(self):
-        repository = InMemoryRepository()
+    async def test_web_session_round_trip_and_expiry(self):
+        repository = self.repository
+        user = await repository.create_web_user("anna@example.com", "hash", "Анна")
         future = datetime.now(timezone.utc) + timedelta(days=7)
 
-        await repository.create_web_session(42, "token-a", future)
-        self.assertEqual(await repository.get_web_session_user_id("token-a"), 42)
+        await repository.create_web_session(user.id, "token-a", future)
+        self.assertEqual(await repository.get_web_session_user_id("token-a"), user.id)
         self.assertIsNone(await repository.get_web_session_user_id("unknown-token"))
 
         past = datetime.now(timezone.utc) - timedelta(seconds=1)
-        await repository.create_web_session(42, "token-expired", past)
+        await repository.create_web_session(user.id, "token-expired", past)
         self.assertIsNone(await repository.get_web_session_user_id("token-expired"))
 
         await repository.delete_web_session("token-a")
         self.assertIsNone(await repository.get_web_session_user_id("token-a"))
 
-    async def test_in_memory_creating_a_session_prunes_the_users_expired_ones(self):
-        repository = InMemoryRepository()
+    async def test_creating_a_session_prunes_the_users_expired_ones(self):
+        repository = self.repository
+        user = await repository.create_web_user("anna@example.com", "hash", "Анна")
         past = datetime.now(timezone.utc) - timedelta(seconds=1)
         future = datetime.now(timezone.utc) + timedelta(days=7)
 
-        await repository.create_web_session(42, "stale-token", past)
-        await repository.create_web_session(42, "fresh-token", future)
+        await repository.create_web_session(user.id, "stale-token", past)
+        await repository.create_web_session(user.id, "fresh-token", future)
 
-        self.assertNotIn("stale-token", repository._web_sessions)
-        self.assertEqual(await repository.get_web_session_user_id("fresh-token"), 42)
+        self.assertEqual(
+            await fetchval(
+                repository,
+                "SELECT COUNT(*) FROM web_sessions WHERE token_hash = $1",
+                hash_session_token("stale-token"),
+            ),
+            0,
+        )
+        self.assertEqual(
+            await repository.get_web_session_user_id("fresh-token"), user.id
+        )
 
-    async def test_in_memory_payment_adds_credits_only_once_and_tracks_activity(self):
-        repository = InMemoryRepository()
+    async def test_payment_adds_credits_only_once_and_tracks_activity(self):
+        repository = self.repository
         await repository.get_or_create_profile(1001, "Анна", False)
         attempt = await repository.begin_lesson_payment_attempt(
             telegram_id=1001,
@@ -342,8 +351,8 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((stats.total_users, stats.online_users), (1, 1))
 
-    async def test_in_memory_payment_history_is_scoped_and_ordered(self):
-        repository = InMemoryRepository()
+    async def test_payment_history_is_scoped_and_ordered(self):
+        repository = self.repository
         await repository.get_or_create_profile(1001, "Анна", False)
         await repository.get_or_create_profile(1002, "Мария", False)
 
@@ -394,8 +403,8 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history[0].status, "pending")
         self.assertEqual(history[1].package_key, "single")
 
-    async def test_in_memory_lists_only_pending_payments_older_than_cutoff(self):
-        repository = InMemoryRepository()
+    async def test_lists_only_pending_payments_older_than_cutoff(self):
+        repository = self.repository
         await repository.get_or_create_profile(1001, "Анна", False)
         await repository.get_or_create_profile(1002, "Мария", False)
 
@@ -414,9 +423,12 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         )
         # Задним числом "состарим" платёж — так же, как если бы он
         # действительно провисел в pending дольше порога сверки.
-        repository._payment_created_at[stale_payment.id] = datetime.now(
-            timezone.utc
-        ) - timedelta(hours=1)
+        await sql(
+            repository,
+            "UPDATE lesson_payments SET created_at = NOW() - INTERVAL '1 hour' "
+            "WHERE id = $1",
+            stale_payment.id,
+        )
 
         fresh_attempt = await repository.begin_lesson_payment_attempt(
             1002, "single", "Разовое занятие", 1, 100000
@@ -445,9 +457,12 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
             confirmation_url="https://pay.example.test/3",
             idempotence_key=succeeded_attempt.idempotence_key,
         )
-        repository._payment_created_at[succeeded_payment.id] = datetime.now(
-            timezone.utc
-        ) - timedelta(hours=1)
+        await sql(
+            repository,
+            "UPDATE lesson_payments SET created_at = NOW() - INTERVAL '1 hour' "
+            "WHERE id = $1",
+            succeeded_payment.id,
+        )
         await repository.complete_lesson_payment(succeeded_payment.id, 1001)
 
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
@@ -456,8 +471,8 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.id for item in pending], [stale_payment.id])
         self.assertEqual(pending[0].telegram_id, 1001)
 
-    async def test_in_memory_refund_reserves_and_reconciles_credits_once(self):
-        repository = InMemoryRepository()
+    async def test_refund_reserves_and_reconciles_credits_once(self):
+        repository = self.repository
         await repository.get_or_create_profile(1001, "Анна", False)
         attempt = await repository.begin_lesson_payment_attempt(
             1001, "pack_4", "Абонемент на 4 занятия", 4, 360000
@@ -494,7 +509,7 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.status, "refunded")
 
     async def test_canceled_payment_allows_a_new_checkout_attempt(self):
-        repository = InMemoryRepository()
+        repository = self.repository
         await repository.get_or_create_profile(1001, "Анна", False)
         attempt = await repository.begin_lesson_payment_attempt(
             1001, "single", "Разовое занятие", 1, 100000
@@ -517,7 +532,7 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(retry.idempotence_key, attempt.idempotence_key)
 
     async def test_refund_rejects_credits_already_used_by_a_booking(self):
-        repository = InMemoryRepository()
+        repository = self.repository
         await repository.get_or_create_profile(1001, "Анна", False)
         attempt = await repository.begin_lesson_payment_attempt(
             1001, "pack_4", "Абонемент на 4 занятия", 4, 360000
@@ -533,12 +548,10 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
             idempotence_key=attempt.idempotence_key,
         )
         await repository.complete_lesson_payment(payment.id, 1001)
-        request = await repository.create_lesson_request(
-            1001,
-            "booking",
-            "Урок из оплаченного пакета",
+        slot = await repository.create_class_slot(
+            "beginner", datetime.now(timezone.utc) + timedelta(days=2), 5, 77
         )
-        self.assertTrue(await repository.complete_request(request.id))
+        await repository.book_class_slot(slot.id, 1001)
 
         with self.assertRaisesRegex(ValueError, "неиспользованных"):
             await repository.prepare_lesson_refund(

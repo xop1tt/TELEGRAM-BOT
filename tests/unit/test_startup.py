@@ -60,45 +60,24 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         repository.close.assert_awaited_once()
         session.close.assert_awaited_once()
 
-    async def test_startup_uses_temporary_storage_when_sql_missing(self):
-        repository = FakeRepository()
-        logger = logging.Logger("test.startup.memory")
-        session = SimpleNamespace(
-            middleware=Mock(),
-            close=AsyncMock(),
-        )
-        bot = SimpleNamespace(
-            session=session,
-            set_my_commands=AsyncMock(),
-            send_message=AsyncMock(),
-        )
-        dispatcher = FakeDispatcher()
+    async def test_development_also_refuses_missing_database_url(self):
+        """Хранилища в памяти нет: без PostgreSQL бот не стартует нигде."""
+        logger = logging.Logger("test.startup.no-database-dev")
         output = StringIO()
 
         with (
-            redirect_stdout(output),
+            redirect_stderr(output),
             patch("flamenco_bot.main.configure_logging", return_value=logger),
-            patch("flamenco_bot.main.create_answers_logger", return_value=logger),
             patch("flamenco_bot.main.Config.ENV", "development"),
             patch("flamenco_bot.main.is_database_configured", return_value=False),
-            patch(
-                "flamenco_bot.main.PostgresRepository.connect",
-                new=AsyncMock(),
-            ) as connect,
-            patch("flamenco_bot.main.InMemoryRepository", return_value=repository),
-            patch("flamenco_bot.main.Bot", return_value=bot),
-            patch("flamenco_bot.main.Dispatcher", return_value=dispatcher),
+            patch("flamenco_bot.main.Bot") as bot,
         ):
-            await run_bot()
+            with self.assertRaises(SystemExit) as exit_error:
+                await run_bot()
 
-        self.assertIn("SQL не настроена!", output.getvalue())
-        connect.assert_not_awaited()
-        repository.initialize.assert_awaited_once()
-        repository.close.assert_awaited_once()
-        dispatcher.start_polling.assert_awaited_once_with(
-            bot,
-            tasks_concurrency_limit=64,
-        )
+        self.assertEqual(exit_error.exception.code, 1)
+        self.assertIn("DATABASE_URL", output.getvalue())
+        bot.assert_not_called()
 
     async def test_invalid_token_fails_without_raw_traceback(self):
         repository = FakeRepository()
@@ -108,8 +87,11 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         with (
             redirect_stderr(output),
             patch("flamenco_bot.main.configure_logging", return_value=logger),
-            patch("flamenco_bot.main.is_database_configured", return_value=False),
-            patch("flamenco_bot.main.InMemoryRepository", return_value=repository),
+            patch("flamenco_bot.main.is_database_configured", return_value=True),
+            patch(
+                "flamenco_bot.main.PostgresRepository.connect",
+                new=AsyncMock(return_value=repository),
+            ),
             patch("flamenco_bot.main.Bot", side_effect=TokenValidationError("invalid")),
         ):
             with self.assertRaises(SystemExit) as error:

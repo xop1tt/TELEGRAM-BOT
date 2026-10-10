@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.runtime.payment_reconciliation import (
     RECONCILIATION_LOCK_ID,
     reconcile_pending_payments,
     start_reconciliation_task,
 )
 from flamenco_bot.services.payments import PaymentCheckResult, PaymentCheckStatus
+from tests.pg import PostgresTestCase
 
 
 @dataclass(frozen=True)
@@ -178,17 +178,6 @@ class ReconcilePendingPaymentsTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
-class InMemoryAdvisoryLockTests(unittest.IsolatedAsyncioTestCase):
-    async def test_lock_is_exclusive_until_released(self):
-        repository = InMemoryRepository()
-        async with repository.try_advisory_lock(RECONCILIATION_LOCK_ID) as first:
-            async with repository.try_advisory_lock(RECONCILIATION_LOCK_ID) as second:
-                self.assertTrue(first)
-                self.assertFalse(second)
-        async with repository.try_advisory_lock(RECONCILIATION_LOCK_ID) as again:
-            self.assertTrue(again)
-
-
 class StartReconciliationTaskTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_task_is_started_when_checkout_is_unavailable(self):
         payment_service = AsyncMock()
@@ -221,7 +210,7 @@ class StartReconciliationTaskTests(unittest.IsolatedAsyncioTestCase):
                 await task
 
 
-class ApiLifespanReconciliationTests(unittest.IsolatedAsyncioTestCase):
+class ApiLifespanReconciliationTests(PostgresTestCase):
     """Сверка платежей идёт и в процессе веб-API — без работающего бота."""
 
     async def test_api_starts_reconciliation_and_cancels_it_on_shutdown(self):
@@ -238,7 +227,12 @@ class ApiLifespanReconciliationTests(unittest.IsolatedAsyncioTestCase):
         config = app_module.WebConfig
         with (
             patch.object(app_module, "start_reconciliation_task", fake_start),
-            patch.object(config, "DATABASE_URL", ""),
+            patch.object(app_module, "is_database_configured", return_value=True),
+            patch.object(
+                app_module.PostgresRepository,
+                "connect",
+                AsyncMock(return_value=self.repository),
+            ),
             patch.object(config, "ENV", "development"),
         ):
             application = app_module.create_app()

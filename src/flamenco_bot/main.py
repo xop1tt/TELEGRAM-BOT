@@ -19,11 +19,7 @@ from .runtime.payment_reconciliation import start_reconciliation_task
 from .runtime.security import SecurityMiddleware, SupportRateLimiter
 from .commands import register_commands
 from .config import Config
-from .database import (
-    InMemoryRepository,
-    PostgresRepository,
-    is_database_configured,
-)
+from .database import PostgresRepository, is_database_configured
 from .database.repository import DatabaseUnavailableError, SchemaVersionError
 from .payments import YooKassaClient
 from .services import PaymentService
@@ -35,10 +31,14 @@ async def main():
     """Запуск бота"""
     logger = configure_logging()
     logger.info("Starting bot env=%s", Config.ENV)
-    if Config.ENV == "production" and not is_database_configured(Config.DATABASE_URL):
-        logger.critical(
-            "DATABASE_URL must point to PostgreSQL in production; "
-            "refusing to use temporary in-memory storage"
+    if not is_database_configured(Config.DATABASE_URL):
+        # Хранилища в памяти больше нет: и для разработки нужен PostgreSQL
+        # (docker compose или TEST_DATABASE_URL, см. README).
+        logger.critical("DATABASE_URL must point to PostgreSQL")
+        print(
+            "DATABASE_URL не задан: боту нужен PostgreSQL (см. README).",
+            file=sys.stderr,
+            flush=True,
         )
         raise SystemExit(1)
 
@@ -68,27 +68,19 @@ async def main():
             restart_store=None,
         )
 
-        if is_database_configured(Config.DATABASE_URL):
-            repository = await PostgresRepository.connect(
-                Config.DATABASE_URL,
-                ssl_ca_path=Config.DATABASE_SSL_CA,
-                pool_min_size=Config.DATABASE_POOL_MIN_SIZE,
-                pool_max_size=Config.DATABASE_POOL_MAX_SIZE,
-                ssl_mode=Config.DATABASE_SSL_MODE,
-                allow_insecure_local=Config.ENV == "development",
-            )
-            logger.info(
-                "Storage backend=postgres pool_min_size=%d pool_max_size=%d",
-                Config.DATABASE_POOL_MIN_SIZE,
-                Config.DATABASE_POOL_MAX_SIZE,
-            )
-        else:
-            print("SQL не настроена! Разрешено только в development.", flush=True)
-            logger.warning(
-                "PostgreSQL is not configured; profile and request data "
-                "will be temporary"
-            )
-            repository = InMemoryRepository()
+        repository = await PostgresRepository.connect(
+            Config.DATABASE_URL,
+            ssl_ca_path=Config.DATABASE_SSL_CA,
+            pool_min_size=Config.DATABASE_POOL_MIN_SIZE,
+            pool_max_size=Config.DATABASE_POOL_MAX_SIZE,
+            ssl_mode=Config.DATABASE_SSL_MODE,
+            allow_insecure_local=Config.ENV == "development",
+        )
+        logger.info(
+            "Storage backend=postgres pool_min_size=%d pool_max_size=%d",
+            Config.DATABASE_POOL_MIN_SIZE,
+            Config.DATABASE_POOL_MAX_SIZE,
+        )
 
         bot.session.middleware(AnswersLogMiddleware(create_answers_logger()))
         dp = Dispatcher()

@@ -19,9 +19,9 @@ import uvicorn
 from flamenco_bot.api import __main__ as api_main
 from flamenco_bot.api.app import create_app
 from flamenco_bot.api.config import WebConfig, parse_frontend_proxy_secret
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.runtime.security import AuthRateLimiter, SupportRateLimiter
 from flamenco_bot.services import AuthService
+from tests.pg import PostgresTestCase
 
 
 FRONTEND_IP = "10.89.250.10"  # адрес контейнера сайта (compose.yaml)
@@ -29,9 +29,9 @@ UNTRUSTED_PEER = "198.51.100.7"
 LIMIT = AuthRateLimiter().max_attempts
 
 
-class ClientIpBehindProxyTests(unittest.IsolatedAsyncioTestCase):
+class ClientIpBehindProxyTests(PostgresTestCase):
     def _app(self, forwarded_allow_ips):
-        repository = InMemoryRepository()
+        repository = self.repository
         app = create_app()
         app.state.repository = repository
         app.state.auth_service = AuthService(repository, "123456:test-token")

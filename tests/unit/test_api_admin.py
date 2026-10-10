@@ -1,26 +1,23 @@
-import asyncio
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
-
 from flamenco_bot.api.app import create_app
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.payments import YooKassaClient
 from flamenco_bot.runtime.security import AuthRateLimiter, SupportRateLimiter
 from flamenco_bot.services import AuthService
 
+from tests.pg import PostgresApiTestCase, PostgresTestCase
 from .test_api_payments import BOT_TOKEN, sign_telegram_payload
 
 
 PASSWORD = "correct-horse-battery-staple"
 
 
-class ApiTestBase(unittest.TestCase):
+class ApiTestBase(PostgresApiTestCase):
     def setUp(self):
-        self.repository = InMemoryRepository()
+        super().setUp()
         app = create_app()
         app.state.repository = self.repository
         app.state.auth_service = AuthService(self.repository, BOT_TOKEN)
@@ -29,10 +26,7 @@ class ApiTestBase(unittest.TestCase):
         app.state.auth_limiter = AuthRateLimiter()
         app.state.payment_gateway = YooKassaClient("", "", "")
         self.bot = app.state.bot
-        self.client = TestClient(app, base_url="https://testserver")
-
-    def run_async(self, coroutine):
-        return asyncio.run(coroutine)
+        self.client = self.make_client(app)
 
     def register(self, email="admin@example.com", client=None):
         response = (client or self.client).post(
@@ -120,7 +114,7 @@ class AdminApiTests(ApiTestBase):
         body = self.client.get("/api/admin/metrics").json()
         self.assertGreaterEqual(body["requests"]["total_since_start"], 2)
         self.assertGreater(body["process"]["uptime_seconds"], -1)
-        self.assertEqual(body["database"]["backend"], "memory")
+        self.assertEqual(body["database"]["backend"], "postgres")
         self.assertGreaterEqual(body["database"]["active_web_sessions"], 1)
 
     def test_dashboard_counts_today_and_week(self):
@@ -209,7 +203,7 @@ class AdminApiTests(ApiTestBase):
 
         # Участник: сначала вошёл только через Telegram (в боте/на сайте),
         # потом зарегистрировался по email и привязал тот же Telegram.
-        other = TestClient(self.client.app, base_url="https://testserver")
+        other = self.make_client(self.client.app)
         telegram_login = sign_telegram_payload(
             {"id": 555, "first_name": "Анна", "auth_date": int(time.time())}
         )
@@ -230,7 +224,7 @@ class AdminApiTests(ApiTestBase):
     # ---------- поддержка ----------
 
     def test_support_reply_and_close(self):
-        member = TestClient(self.client.app, base_url="https://testserver")
+        member = self.make_client(self.client.app)
         member.post(
             "/api/auth/telegram",
             json=sign_telegram_payload(
@@ -293,7 +287,7 @@ class CredentialsApiTests(ApiTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["email"], "anna@example.com")
 
-        fresh = TestClient(self.client.app, base_url="https://testserver")
+        fresh = self.make_client(self.client.app)
         login = fresh.post(
             "/api/auth/login", json={"email": "anna@example.com", "password": PASSWORD}
         )
@@ -309,7 +303,7 @@ class CredentialsApiTests(ApiTestBase):
 
     def test_email_taken_by_other_account_returns_409(self):
         self.register("anna@example.com")
-        other = TestClient(self.client.app, base_url="https://testserver")
+        other = self.make_client(self.client.app)
         self.login_with_telegram(client=other)
         response = other.post(
             "/api/auth/me/credentials",
@@ -328,9 +322,9 @@ class CredentialsApiTests(ApiTestBase):
             self.assertEqual(response.status_code, 422, payload)
 
 
-class EnsureAdminAccountTests(unittest.IsolatedAsyncioTestCase):
+class EnsureAdminAccountTests(PostgresTestCase):
     async def test_creates_and_promotes_admin(self):
-        repository = InMemoryRepository()
+        repository = self.repository
         service = AuthService(repository, BOT_TOKEN)
         created = await service.ensure_admin_account("Boss@Example.com", PASSWORD)
         self.assertTrue(created.is_admin)

@@ -3,7 +3,6 @@ import hmac
 import time
 import unittest
 
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.services.auth import (
     AuthService,
     CannotUnlinkOnlyLoginMethodError,
@@ -16,6 +15,7 @@ from flamenco_bot.services.auth import (
     verify_password,
     verify_telegram_login,
 )
+from tests.pg import PostgresTestCase
 
 
 BOT_TOKEN = "123456:test-token"
@@ -72,9 +72,9 @@ class TelegramLoginVerificationTests(unittest.TestCase):
             verify_telegram_login(make_telegram_payload(), BOT_TOKEN)
 
 
-class AuthServiceTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.repository = InMemoryRepository()
+class AuthServiceTests(PostgresTestCase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
         self.service = AuthService(self.repository, BOT_TOKEN)
 
     async def test_register_and_authenticate_with_email(self):

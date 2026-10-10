@@ -100,9 +100,7 @@ class PaymentService:
 
     @property
     def checkout_available(self) -> bool:
-        return bool(self.gateway.is_configured) and bool(
-            getattr(self.repository, "supports_durable_payments", False)
-        )
+        return bool(self.gateway.is_configured)
 
     async def start_checkout(
         self,

@@ -16,7 +16,6 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse, Response
 
 from ..database import (
-    InMemoryRepository,
     PostgresRepository,
     is_database_configured,
     is_database_unavailable,
@@ -50,27 +49,18 @@ logger = logging.getLogger("bot.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_api_logging()
-    if WebConfig.ENV == "production" and not is_database_configured(
-        WebConfig.DATABASE_URL
-    ):
-        raise RuntimeError(
-            "DATABASE_URL must point to PostgreSQL in production; "
-            "refusing to use temporary in-memory storage"
-        )
+    if not is_database_configured(WebConfig.DATABASE_URL):
+        raise RuntimeError("DATABASE_URL must point to PostgreSQL")
 
-    if is_database_configured(WebConfig.DATABASE_URL):
-        repository = await PostgresRepository.connect(
-            WebConfig.DATABASE_URL,
-            ssl_ca_path=WebConfig.DATABASE_SSL_CA,
-            pool_min_size=WebConfig.DATABASE_POOL_MIN_SIZE,
-            pool_max_size=WebConfig.DATABASE_POOL_MAX_SIZE,
-            ssl_mode=WebConfig.DATABASE_SSL_MODE,
-            allow_insecure_local=WebConfig.ENV == "development",
-        )
-        logger.info("API storage backend=postgres")
-    else:
-        logger.warning("PostgreSQL is not configured; web accounts will be temporary")
-        repository = InMemoryRepository()
+    repository = await PostgresRepository.connect(
+        WebConfig.DATABASE_URL,
+        ssl_ca_path=WebConfig.DATABASE_SSL_CA,
+        pool_min_size=WebConfig.DATABASE_POOL_MIN_SIZE,
+        pool_max_size=WebConfig.DATABASE_POOL_MAX_SIZE,
+        ssl_mode=WebConfig.DATABASE_SSL_MODE,
+        allow_insecure_local=WebConfig.ENV == "development",
+    )
+    logger.info("API storage backend=postgres")
     await repository.initialize()
 
     # Тот же бот, что и в main.py: нужен только чтобы рассылать уведомления

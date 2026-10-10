@@ -5,13 +5,12 @@ import unittest
 import uuid
 from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
 
 from flamenco_bot.api.app import create_app
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.payments import YooKassaClient
 from flamenco_bot.runtime.security import AuthRateLimiter, SupportRateLimiter
 from flamenco_bot.services import AuthService
+from tests.pg import PostgresApiTestCase
 
 
 BOT_TOKEN = "123456:test-token"
@@ -27,9 +26,9 @@ def sign_telegram_payload(payload, bot_token=BOT_TOKEN):
     return data
 
 
-class ApiPaymentsTests(unittest.TestCase):
+class ApiPaymentsTests(PostgresApiTestCase):
     def setUp(self):
-        self.repository = InMemoryRepository()
+        super().setUp()
         app = create_app()
         app.state.repository = self.repository
         app.state.auth_service = AuthService(self.repository, BOT_TOKEN)
@@ -40,7 +39,7 @@ class ApiPaymentsTests(unittest.TestCase):
         # тот же способ, которым checkout остаётся недоступен без реального
         # подключения ЮKassa в продакшене (см. WebConfig.WEB_YOOKASSA_RETURN_URL).
         app.state.payment_gateway = YooKassaClient("", "", "")
-        self.client = TestClient(app, base_url="https://testserver")
+        self.client = self.make_client(app)
 
     def _login(self, telegram_id=555):
         payload = {
@@ -115,9 +114,7 @@ class ApiPaymentsTests(unittest.TestCase):
                 idempotence_key=uuid.uuid4(),
             )
 
-        import asyncio
-
-        asyncio.run(seed())
+        self.run_async(seed())
 
         response = self.client.get("/api/payments/me")
         self.assertEqual(response.status_code, 200)

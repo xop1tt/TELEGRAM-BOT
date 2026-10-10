@@ -42,7 +42,6 @@ from ..class_catalog import CLASS_LABELS, CLASS_SHORT_LABELS
 from ..config import Config
 from ..database.repository import CLASS_KEYS
 from ..database.studio_models import (
-    DurableStorageRequiredError,
     PackageGrantNotFoundError,
     SlotNotFoundError,
     SlotStateError,
@@ -1132,9 +1131,6 @@ async def choose_grant_package(callback: CallbackQuery, repository: Any) -> None
     if await _admin(callback, repository) is None:
         return
     tid = _tid(callback)
-    if not PackageService(repository).admin_operations_available:
-        await callback.answer("Выдача абонемента требует PostgreSQL.", show_alert=True)
-        return
     rows = [
         [
             button(
@@ -1240,7 +1236,7 @@ async def confirm_grant(
             admin_id,
             uuid.UUID(pending["key"]),
         )
-    except (ValueError, LookupError, PermissionError, DurableStorageRequiredError) as e:
+    except (ValueError, LookupError, PermissionError) as e:
         await _clear_pending(state)
         await callback.answer("Не выдано: {}".format(e), show_alert=True)
         return
@@ -1341,7 +1337,6 @@ async def confirm_revoke(
         ValueError,
         PermissionError,
         PackageGrantNotFoundError,
-        DurableStorageRequiredError,
     ) as error:
         await _clear_pending(state)
         await callback.answer("Не отозвано: {}".format(error), show_alert=True)
@@ -1373,11 +1368,6 @@ async def start_client_adjustment(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
     if await _admin(callback, repository) is None:
-        return
-    if not CreditService(repository, Config.CREDIT_ADJUSTMENT_MAX_DELTA).available:
-        await callback.answer(
-            "Корректировка баланса требует PostgreSQL.", show_alert=True
-        )
         return
     await state.set_state(AdminForm.waiting_for_client_adjustment)
     await state.update_data(adjust_telegram_id=_tid(callback))
@@ -1726,9 +1716,6 @@ async def show_reconciliation(callback: CallbackQuery, repository: Any) -> None:
     if await _admin(callback, repository) is None:
         return
     service = CreditService(repository, Config.CREDIT_ADJUSTMENT_MAX_DELTA)
-    if not service.available:
-        await callback.answer("Сверка баланса требует PostgreSQL.", show_alert=True)
-        return
     result = await service.reconcile(CREDIT_AUDIT_LIMIT)
     if not result.mismatched_users:
         text = "Сверка баланса: расхождений нет (проверено участников: {}).".format(

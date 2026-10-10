@@ -47,10 +47,6 @@ class SlotStateError(RuntimeError):
     """
 
 
-class DurableStorageRequiredError(RuntimeError):
-    """Операция требует PostgreSQL (недоступна во временном хранилище)."""
-
-
 class PackageGrantNotFoundError(LookupError):
     """Выданного абонемента с таким id нет."""
 

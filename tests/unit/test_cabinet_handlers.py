@@ -2,30 +2,27 @@
 
 import unittest
 import uuid
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.handlers import connect
 from flamenco_bot.keyboards.user import cabinet, lessons
 from flamenco_bot.keyboards.user.account import open_profile
 from flamenco_bot.keyboards.user.main_menu import open_packages, open_purchases
 from flamenco_bot.services import AuthService
 from tests.support import FakeCallback, FakeMessage, FakeState, callback_data
+from tests.pg import PostgresTestCase, make_admin, set_credits
 
 USER_ID = 1001
 ADMIN_ID = 77
 
 
-class CabinetHandlerTests(unittest.IsolatedAsyncioTestCase):
+class CabinetHandlerTests(PostgresTestCase):
     async def asyncSetUp(self):
-        self.repository = InMemoryRepository()
+        await super().asyncSetUp()
         await self.repository.get_or_create_profile(USER_ID, "Анна", False)
         await self.repository.get_or_create_profile(ADMIN_ID, "Админ", False)
-        self.repository._profiles[ADMIN_ID] = replace(
-            self.repository._profiles[ADMIN_ID], is_admin=True
-        )
+        await make_admin(self.repository, ADMIN_ID)
         self.state = FakeState()
 
     async def _grant(self, lessons_count=4, reason="наличные"):
@@ -98,12 +95,12 @@ class CabinetHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Баланс: 1 занятие", text)
 
     async def test_operations_history_with_reasons_and_paging(self):
+        # Занятия на 12 записей — раньше абонемента, чтобы он оказался между
+        # списаниями и этим начислением, на второй странице истории.
+        await set_credits(self.repository, USER_ID, 12)
         await self._grant(reason="оплата наличными")
         for days in range(2, 14):
             slot = await self._slot(days=days)
-            self.repository._set_credits(
-                USER_ID, self.repository._profiles[USER_ID].lesson_credits + 1
-            )
             await self.repository.book_class_slot(slot.id, USER_ID)
 
         callback = FakeCallback("hist:o")
@@ -122,7 +119,7 @@ class CabinetHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_class_history_marks_studio_cancellation_and_reschedule(self):
         cancelled = await self._slot(days=2)
         moved = await self._slot(days=4)
-        self.repository._set_credits(USER_ID, 2)
+        await set_credits(self.repository, USER_ID, 2)
         await self.repository.book_class_slot(cancelled.id, USER_ID)
         await self.repository.book_class_slot(moved.id, USER_ID)
         await self.repository.cancel_class_slot(cancelled.id, ADMIN_ID, "ремонт")
@@ -162,7 +159,7 @@ class CabinetHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rescheduled_booking_can_be_cancelled_inside_24_hours(self):
         slot = await self._slot(days=3)
-        self.repository._set_credits(USER_ID, 1)
+        await set_credits(self.repository, USER_ID, 1)
         await self.repository.book_class_slot(slot.id, USER_ID)
         await self.repository.reschedule_class_slot(
             slot.id, datetime.now(timezone.utc) + timedelta(hours=5), ADMIN_ID
@@ -179,9 +176,9 @@ class CabinetHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.repository.get_lesson_credits(USER_ID), 1)
 
 
-class TelegramConnectHandlerTests(unittest.IsolatedAsyncioTestCase):
+class TelegramConnectHandlerTests(PostgresTestCase):
     async def asyncSetUp(self):
-        self.repository = InMemoryRepository()
+        await super().asyncSetUp()
         self.auth = AuthService(self.repository, "123:token")
 
     def command(self, args):
@@ -254,9 +251,9 @@ class TelegramConnectHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("уже использована или устарела", late.screen[0])
 
 
-class TelegramConnectConflictTests(unittest.IsolatedAsyncioTestCase):
+class TelegramConnectConflictTests(PostgresTestCase):
     async def test_link_to_telegram_owned_by_email_account_is_rejected(self):
-        repository = InMemoryRepository()
+        repository = self.repository
         auth = AuthService(repository, "123:token")
         owner = await repository.create_web_user(
             "owner@example.org", "hash", "Владелец"

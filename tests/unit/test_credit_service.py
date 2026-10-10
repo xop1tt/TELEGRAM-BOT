@@ -3,7 +3,6 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.database.repository import (
     CreditAdjustment,
     CreditBalanceMismatch,
@@ -15,17 +14,12 @@ from flamenco_bot.services import CreditService
 class CreditServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.repository = AsyncMock()
-        self.repository.supports_durable_payments = True
         self.service = CreditService(self.repository, max_adjustment=10)
         self.key = uuid.uuid4()
 
     def test_limit_must_be_positive(self):
         with self.assertRaises(ValueError):
             CreditService(self.repository, 0)
-
-    def test_adjustment_requires_postgres(self):
-        self.assertTrue(self.service.available)
-        self.assertFalse(CreditService(InMemoryRepository(), 10).available)
 
     def test_validate_normalizes_reason_and_rejects_bad_input(self):
         self.assertEqual(self.service.validate_adjustment(2, "  наличные "), "наличные")

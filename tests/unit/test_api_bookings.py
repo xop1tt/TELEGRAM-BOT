@@ -12,14 +12,12 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
 
 from flamenco_bot.api.app import create_app
-from flamenco_bot.database import InMemoryRepository
-from flamenco_bot.database.repository import UserProfile
 from flamenco_bot.payments import YooKassaClient
 from flamenco_bot.runtime.security import AuthRateLimiter, SupportRateLimiter
 from flamenco_bot.services import AuthService
+from tests.pg import PostgresApiTestCase, set_credits
 
 
 BOT_TOKEN = "123456:test-token"
@@ -35,9 +33,9 @@ def sign_telegram_payload(payload, bot_token=BOT_TOKEN):
     return data
 
 
-class ApiBookingsTests(unittest.TestCase):
+class ApiBookingsTests(PostgresApiTestCase):
     def setUp(self):
-        self.repository = InMemoryRepository()
+        super().setUp()
         app = create_app()
         app.state.repository = self.repository
         app.state.auth_service = AuthService(self.repository, BOT_TOKEN)
@@ -45,7 +43,7 @@ class ApiBookingsTests(unittest.TestCase):
         app.state.support_limiter = SupportRateLimiter()
         app.state.auth_limiter = AuthRateLimiter()
         app.state.payment_gateway = YooKassaClient("", "", "")
-        self.client = TestClient(app, base_url="https://testserver")
+        self.client = self.make_client(app)
 
     def _login(self, telegram_id=1001):
         payload = {
@@ -59,8 +57,6 @@ class ApiBookingsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
     def _create_slot(self, capacity=1, created_by=77, starts_at=None):
-        import asyncio
-
         async def create():
             return await self.repository.create_class_slot(
                 "beginner",
@@ -69,19 +65,11 @@ class ApiBookingsTests(unittest.TestCase):
                 created_by,
             )
 
-        return asyncio.run(create())
+        return self.run_async(create())
 
     def _grant_credits(self, telegram_id, credits=1):
         """Выдаёт lesson_credits — бронирование теперь списывает их напрямую."""
-        profile = self.repository._profiles[telegram_id]
-        self.repository._profiles[telegram_id] = UserProfile(
-            telegram_id=profile.telegram_id,
-            phone=profile.phone,
-            user_name=profile.user_name,
-            registered_at=profile.registered_at,
-            is_admin=profile.is_admin,
-            lesson_credits=credits,
-        )
+        self.run_async(set_credits(self.repository, telegram_id, credits))
 
     def test_create_booking_requires_login(self):
         slot = self._create_slot()

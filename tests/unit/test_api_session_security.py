@@ -14,13 +14,12 @@ import time
 import unittest
 from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
 
 from flamenco_bot.api.app import create_app
 from flamenco_bot.api.security import SESSION_COOKIE_NAME, generate_session_token
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.runtime.security import AuthRateLimiter, SupportRateLimiter
 from flamenco_bot.services import AuthService
+from tests.pg import PostgresApiTestCase
 
 
 BOT_TOKEN = "123456:test-token"
@@ -52,18 +51,18 @@ class SessionTokenGenerationTests(unittest.TestCase):
         self.assertGreaterEqual(len(token), 32)
 
 
-class SessionRevocationApiTests(unittest.TestCase):
+class SessionRevocationApiTests(PostgresApiTestCase):
     """Сквозной тест через настоящий HTTP-слой, а не вызов функции напрямую."""
 
     def setUp(self):
-        self.repository = InMemoryRepository()
+        super().setUp()
         app = create_app()
         app.state.repository = self.repository
         app.state.auth_service = AuthService(self.repository, BOT_TOKEN)
         app.state.bot = AsyncMock()
         app.state.support_limiter = SupportRateLimiter()
         app.state.auth_limiter = AuthRateLimiter()
-        self.client = TestClient(app, base_url="https://testserver")
+        self.client = self.make_client(app)
 
     def _login(self, telegram_id=555):
         payload = {
@@ -97,7 +96,7 @@ class SessionRevocationApiTests(unittest.TestCase):
         logout_response = self.client.post("/api/auth/logout")
         self.assertEqual(logout_response.status_code, 204)
 
-        replay_client = TestClient(self.client.app, base_url="https://testserver")
+        replay_client = self.make_client(self.client.app)
         replay_client.cookies.set(SESSION_COOKIE_NAME, issued_cookie)
         replayed = replay_client.get("/api/auth/me")
 

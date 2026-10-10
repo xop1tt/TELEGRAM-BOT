@@ -3,12 +3,11 @@ import hmac
 import time
 import unittest
 
-from fastapi.testclient import TestClient
 
 from flamenco_bot.api.app import create_app
-from flamenco_bot.database import InMemoryRepository
 from flamenco_bot.runtime.security import AuthRateLimiter
 from flamenco_bot.services import AuthService
+from tests.pg import PostgresApiTestCase
 
 
 BOT_TOKEN = "123456:test-token"
@@ -32,16 +31,16 @@ def make_telegram_payload(telegram_id=555, first_name="Анна", auth_date=None
     }
 
 
-class ApiAuthTests(unittest.TestCase):
+class ApiAuthTests(PostgresApiTestCase):
     def setUp(self):
-        self.repository = InMemoryRepository()
+        super().setUp()
         app = create_app()
         app.state.repository = self.repository
         app.state.auth_service = AuthService(self.repository, BOT_TOKEN)
         app.state.auth_limiter = AuthRateLimiter()
         # https-схема нужна, чтобы httpx-клиент сохранял Secure-cookie сессии
         # между запросами — так же, как это делает настоящий браузер на сайте.
-        self.client = TestClient(app, base_url="https://testserver")
+        self.client = self.make_client(app)
 
     def test_register_sets_session_cookie_and_returns_user(self):
         response = self.client.post(
@@ -271,7 +270,7 @@ class ApiAuthTests(unittest.TestCase):
     def test_health_endpoint_reports_backend(self):
         response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["backend"], "memory")
+        self.assertEqual(response.json()["backend"], "postgres")
 
 
 if __name__ == "__main__":
