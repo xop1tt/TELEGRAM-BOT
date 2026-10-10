@@ -41,8 +41,6 @@ services:
       # Секреты — Render спросит их при создании, в git их нет.
       - key: BOT_TOKEN
         sync: false
-      - key: ADMINS
-        sync: false
       - key: DATABASE_URL
         sync: false
       - key: BOT_USERNAME

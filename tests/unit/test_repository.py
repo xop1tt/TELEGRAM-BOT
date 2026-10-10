@@ -29,23 +29,26 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.repository = PostgresRepository(self.pool)
 
     async def test_profile_operations_use_parameterized_queries(self):
-        profile = await self.repository.get_or_create_profile(1001, "Анна", False)
+        profile = await self.repository.get_or_create_profile(1001, "Анна")
         self.assertEqual(profile.telegram_id, 1001)
         await self.repository.update_phone(1001, "+79990000000")
         await self.repository.update_user_name(1001, "Новое имя")
-        update_queries = self.pool.connection.calls[1:]
+        # Профиль: INSERT … ON CONFLICT, затем SELECT с ролью; дальше — UPDATE.
+        update_queries = self.pool.connection.calls[2:]
         self.assertEqual(update_queries[0][1], (1001, "+79990000000"))
         self.assertEqual(update_queries[1][1], (1001, "Новое имя"))
 
-    async def test_profile_load_preserves_admin_status_set_in_database(self):
+    async def test_profile_role_comes_from_staff_members_only(self):
         self.pool.connection.profile_admin_status[1001] = True
 
-        profile = await self.repository.get_or_create_profile(1001, "Анна", False)
+        profile = await self.repository.get_or_create_profile(1001, "Анна")
 
         self.assertTrue(profile.is_admin)
-        query, _ = self.pool.connection.calls[-1]
-        self.assertIn("SET is_admin = bot_users.is_admin", query)
-        self.assertNotIn("EXCLUDED.is_admin", query)
+        self.assertEqual(profile.role, "admin")
+        insert_query, _ = self.pool.connection.calls[0]
+        self.assertNotIn("is_admin", insert_query)
+        select_query, _ = self.pool.connection.calls[-1]
+        self.assertIn("LEFT JOIN staff_members", select_query)
 
     async def test_profile_search_and_exact_lookup(self):
         profiles = await self.repository.search_profiles("Анна", limit=10)
@@ -59,7 +62,7 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.fail("Profile lookup returned no profile")
         self.assertEqual(profile.telegram_id, 1001)
         query, args = self.pool.connection.calls[-1]
-        self.assertIn("WHERE telegram_id = $1", query)
+        self.assertIn("WHERE profile.telegram_id = $1", query)
         self.assertEqual(args, (1001,))
 
         with self.assertRaises(ValueError):
@@ -243,11 +246,11 @@ class RepositoryBehaviourTests(PostgresTestCase):
 
     async def test_profile_round_trip_keeps_name_phone_and_admin_flag(self):
         repository = self.repository
-        profile = await repository.get_or_create_profile(1001, "Анна", False)
+        profile = await repository.get_or_create_profile(1001, "Анна")
         self.assertEqual(profile.user_name, "Анна")
         await repository.update_phone(1001, "+79990000000")
         await repository.update_user_name(1001, "Анна Мария")
-        updated = await repository.get_or_create_profile(1001, "Ignored", False)
+        updated = await repository.get_or_create_profile(1001, "Ignored")
         self.assertEqual(updated.phone, "+79990000000")
         self.assertEqual(updated.user_name, "Анна Мария")
         self.assertFalse(updated.is_admin)
@@ -291,7 +294,7 @@ class RepositoryBehaviourTests(PostgresTestCase):
 
     async def test_payment_adds_credits_only_once_and_tracks_activity(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
+        await repository.get_or_create_profile(1001, "Анна")
         attempt = await repository.begin_lesson_payment_attempt(
             telegram_id=1001,
             package_key="pack_4",
@@ -339,8 +342,8 @@ class RepositoryBehaviourTests(PostgresTestCase):
 
     async def test_payment_history_is_scoped_and_ordered(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
-        await repository.get_or_create_profile(1002, "Мария", False)
+        await repository.get_or_create_profile(1001, "Анна")
+        await repository.get_or_create_profile(1002, "Мария")
 
         first_attempt = await repository.begin_lesson_payment_attempt(
             1001, "single", "Разовое занятие", 1, 100000
@@ -391,8 +394,8 @@ class RepositoryBehaviourTests(PostgresTestCase):
 
     async def test_lists_only_pending_payments_older_than_cutoff(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
-        await repository.get_or_create_profile(1002, "Мария", False)
+        await repository.get_or_create_profile(1001, "Анна")
+        await repository.get_or_create_profile(1002, "Мария")
 
         stale_attempt = await repository.begin_lesson_payment_attempt(
             1001, "single", "Разовое занятие", 1, 100000
@@ -459,7 +462,7 @@ class RepositoryBehaviourTests(PostgresTestCase):
 
     async def test_refund_reserves_and_reconciles_credits_once(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
+        await repository.get_or_create_profile(1001, "Анна")
         attempt = await repository.begin_lesson_payment_attempt(
             1001, "pack_4", "Абонемент на 4 занятия", 4, 360000
         )
@@ -496,7 +499,7 @@ class RepositoryBehaviourTests(PostgresTestCase):
 
     async def test_canceled_payment_allows_a_new_checkout_attempt(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
+        await repository.get_or_create_profile(1001, "Анна")
         attempt = await repository.begin_lesson_payment_attempt(
             1001, "single", "Разовое занятие", 1, 100000
         )
@@ -519,7 +522,7 @@ class RepositoryBehaviourTests(PostgresTestCase):
 
     async def test_refund_rejects_credits_already_used_by_a_booking(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
+        await repository.get_or_create_profile(1001, "Анна")
         attempt = await repository.begin_lesson_payment_attempt(
             1001, "pack_4", "Абонемент на 4 занятия", 4, 360000
         )

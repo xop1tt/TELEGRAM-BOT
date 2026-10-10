@@ -165,13 +165,14 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         dispatcher.start_polling.side_effect = RuntimeError(
             "private connection details"
         )
+        # Адресаты системных уведомлений — администраторы из БД.
+        repository.list_admin_ids.return_value = [8373364453, 123456789]
         output = StringIO()
 
         with (
             redirect_stdout(output),
             patch("flamenco_bot.main.configure_logging", return_value=logger),
             patch("flamenco_bot.main.Config.ENV", "development"),
-            patch("flamenco_bot.main.Config.ADMINS", [8373364453, 123456789]),
             patch("flamenco_bot.main.is_database_configured", return_value=True),
             patch(
                 "flamenco_bot.main.PostgresRepository.connect",
@@ -210,11 +211,11 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         )
         dispatcher = FakeDispatcher()
         dispatcher.start_polling.side_effect = RuntimeError("private details")
+        repository.list_admin_ids.return_value = [123456789]
 
         with (
             patch("flamenco_bot.main.configure_logging", return_value=logger),
             patch("flamenco_bot.main.Config.ENV", "production"),
-            patch("flamenco_bot.main.Config.ADMINS", [123456789]),
             patch("flamenco_bot.main.is_database_configured", return_value=True),
             patch(
                 "flamenco_bot.main.PostgresRepository.connect",

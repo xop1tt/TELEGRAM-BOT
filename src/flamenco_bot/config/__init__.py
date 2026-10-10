@@ -11,25 +11,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def parse_admins(value: str) -> list[int]:
-    admins = []
-    for item in value.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        try:
-            telegram_id = int(item)
-        except ValueError as error:
-            raise ValueError(
-                "ADMINS должен содержать только числовые Telegram ID"
-            ) from error
-        if telegram_id <= 0:
-            raise ValueError("Telegram ID администраторов должны быть положительными")
-        if telegram_id not in admins:
-            admins.append(telegram_id)
-    return admins
-
-
 def parse_database_pool_sizes(min_size: str, max_size: str) -> tuple[int, int]:
     try:
         minimum = int(min_size)
@@ -109,9 +90,6 @@ class Config:
 
     # Токен бота
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
-
-    # Администраторы
-    ADMINS: list[int] = parse_admins(os.getenv("ADMINS", ""))
 
     # Окружение
     ENV: str = os.getenv("ENV", "development").strip().lower()

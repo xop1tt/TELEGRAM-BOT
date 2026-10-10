@@ -253,32 +253,6 @@ class AuthService:
             raise LookupError("Аккаунт не найден")
         return updated
 
-    async def ensure_admin_account(
-        self,
-        email: str,
-        password: str,
-        display_name: str = "Администратор",
-    ) -> WebUserRecord:
-        """Создаёт аккаунт администратора или делает администратором
-        существующий (пароль при этом заменяется). Только для серверной
-        команды ``python -m flamenco_bot.api.manage`` — не для API."""
-        normalized_email = _normalize_email(email)
-        _check_password(password)
-        password_hash = await asyncio.to_thread(hash_password, password)
-        user = await self.repository.get_web_user_by_email(normalized_email)
-        if user is None:
-            user = await self.repository.create_web_user(
-                normalized_email, password_hash, display_name.strip() or "Администратор"
-            )
-        else:
-            await self.repository.set_web_user_password(user.id, password_hash)
-        await self.repository.set_web_user_admin(user.id, True)
-        logger.info("Ensured web admin account user_id=%s", user.id)
-        updated = await self.repository.get_web_user_by_id(user.id)
-        if updated is None:
-            raise LookupError("Аккаунт не найден")
-        return updated
-
     async def authenticate_with_email(
         self,
         email: str,
@@ -304,7 +278,6 @@ class AuthService:
         await self.repository.get_or_create_profile(
             telegram_id=telegram_id,
             user_name=display_name,
-            is_admin=False,
         )
         user = await self.repository.get_or_create_web_user_from_telegram(
             telegram_id, display_name
@@ -324,7 +297,6 @@ class AuthService:
         await self.repository.get_or_create_profile(
             telegram_id=telegram_id,
             user_name=display_name,
-            is_admin=False,
         )
         try:
             # Аккаунт, созданный только входом через Telegram (без email),
@@ -408,7 +380,6 @@ class AuthService:
         await self.repository.get_or_create_profile(
             telegram_id=telegram_id,
             user_name=display_name.strip() or "Участник студии",
-            is_admin=False,
         )
         request = await self.repository.confirm_telegram_connect_request(
             token, telegram_id

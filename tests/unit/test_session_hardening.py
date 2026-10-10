@@ -15,7 +15,7 @@ from tests.pg import PostgresTestCase, fetch_all
 class SessionTokenHashingTests(PostgresTestCase):
     async def test_raw_token_is_not_stored_but_lookup_and_revocation_work(self):
         repository = self.repository
-        await repository.get_or_create_profile(555, "Анна", False)
+        await repository.get_or_create_profile(555, "Анна")
         user = await repository.get_or_create_web_user_from_telegram(555, "Анна")
         token = "cookie-token-value"
         expires = datetime.now(timezone.utc) + timedelta(days=7)

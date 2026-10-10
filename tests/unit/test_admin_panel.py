@@ -20,13 +20,14 @@ from tests.support import FakeCallback, FakeMessage, FakeState, callback_data
 
 ADMIN_ID = 77
 USER_ID = 1001
+TEACHER_ID = 55
 
 
 class AdminPanelTests(PostgresTestCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         await make_admin(self.repository, ADMIN_ID)
-        await self.repository.get_or_create_profile(USER_ID, "Анна", False)
+        await self.repository.get_or_create_profile(USER_ID, "Анна")
         self.state = FakeState()
         self.logger_patch = patch("flamenco_bot.handlers.admin_panel.actions_logger")
         self.actions = self.logger_patch.start()
@@ -44,9 +45,7 @@ class AdminPanelTests(PostgresTestCase):
         )
 
     async def _book(self, slot_id, telegram_id=USER_ID, credits=1):
-        profile = await self.repository.get_or_create_profile(
-            telegram_id, "Участник", False
-        )
+        profile = await self.repository.get_or_create_profile(telegram_id, "Участник")
         await set_credits(
             self.repository, telegram_id, profile.lesson_credits + credits
         )
@@ -84,16 +83,75 @@ class AdminPanelTests(PostgresTestCase):
                     await handler(callback, self.repository, self.state)
                 else:
                     await handler(callback, self.repository)
-                callback.answer.assert_awaited_with(
-                    "Доступно только администратору студии.", show_alert=True
-                )
+                text = callback.answer.await_args.args[0]
+                self.assertRegex(text, "^Доступно только (администратору|сотрудникам)")
+                self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
                 callback.message.edit_text.assert_not_awaited()
         self.assertEqual((await self.repository.get_class_slot(slot.id)).status, "open")
 
     async def test_admin_text_commands_require_admin(self):
         message = FakeMessage(text="/slots", telegram_id=USER_ID)
         await admin_panel.open_schedule(message, self.state, self.repository)
-        self.assertIn("только администратору", message.last_answer.args[0])
+        self.assertIn("только сотрудникам", message.last_answer.args[0])
+
+    # --- преподаватель --------------------------------------------------------
+
+    async def _teacher(self, telegram_id=TEACHER_ID):
+        await self.repository.get_or_create_profile(telegram_id, "Мария")
+        await self.repository.set_staff_role(telegram_id, "teacher", ADMIN_ID)
+
+    async def test_teacher_sees_and_manages_only_own_slots(self):
+        await self._teacher()
+        own = await self.repository.create_class_slot(
+            "beginner",
+            datetime.now(timezone.utc) + timedelta(days=2),
+            5,
+            ADMIN_ID,
+            teacher_telegram_id=TEACHER_ID,
+        )
+        other = await self._slot(days=3)
+
+        schedule = self.press("a:sch", telegram_id=TEACHER_ID)
+        await admin_panel.show_schedule(schedule, self.repository, self.state)
+        text, markup = schedule.screen
+        data = callback_data(markup)
+        self.assertIn("Мои занятия", text)
+        self.assertIn("a:s:{}".format(own.id), data)
+        self.assertNotIn("a:s:{}".format(other.id), data)
+        self.assertNotIn("a:new", data)
+
+        foreign = self.press("a:sc:{}".format(other.id), telegram_id=TEACHER_ID)
+        await admin_panel.toggle_slot(foreign, self.repository)
+        foreign.answer.assert_awaited_with(
+            "Это занятие ведёт другой преподаватель.", show_alert=True
+        )
+        self.assertEqual(
+            (await self.repository.get_class_slot(other.id)).status, "open"
+        )
+
+        mine = self.press("a:sc:{}".format(own.id), telegram_id=TEACHER_ID)
+        await admin_panel.toggle_slot(mine, self.repository)
+        self.assertEqual(
+            (await self.repository.get_class_slot(own.id)).status, "closed"
+        )
+        self.assertIn("Преподаватель: Мария", mine.screen[0])
+
+    async def test_teacher_has_no_client_cards_or_finance(self):
+        await self._teacher()
+        for data, handler in (
+            ("a:c:{}".format(USER_ID), admin_panel.show_client),
+            ("a:fin", admin_panel.show_finance),
+            ("a:new", admin_panel.choose_new_slot_class),
+        ):
+            with self.subTest(data=data):
+                callback = self.press(data, telegram_id=TEACHER_ID)
+                if handler is admin_panel.show_client:
+                    await handler(callback, self.repository, self.state)
+                else:
+                    await handler(callback, self.repository)
+                callback.answer.assert_awaited_with(
+                    "Доступно только администратору студии.", show_alert=True
+                )
 
     # --- расписание и отмена ---------------------------------------------
 

@@ -65,7 +65,6 @@ class PostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await self.repository.get_or_create_profile(
                 self.telegram_id,
                 "Integration test",
-                False,
             )
         except BaseException:
             await self._cleanup()
@@ -300,7 +299,6 @@ class PostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await repository.get_or_create_profile(
                 telegram_id,
                 "Integration test participant",
-                False,
             )
         for telegram_id in (self.telegram_id, *additional_users):
             await self._grant_credits(telegram_id, 1)
@@ -374,7 +372,6 @@ class PostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await repository.get_or_create_profile(
             other_telegram_id,
             "Second participant",
-            False,
         )
         slot = await repository.create_class_slot(
             "beginner",

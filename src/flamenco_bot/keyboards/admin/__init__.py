@@ -13,8 +13,11 @@ ADMIN_FINANCE = "💰 Финансы"
 SUPPORT_TICKETS = "📨 Обращения поддержки"
 
 
-def admin_menu_keyboard() -> ReplyKeyboardMarkup:
-    """Четыре раздела; действия внутри — inline-кнопками в карточках."""
+def admin_menu_keyboard(role: str = "admin") -> ReplyKeyboardMarkup:
+    """Администратору — четыре раздела, преподавателю — свои занятия и
+    поддержка; действия внутри — inline-кнопками в карточках."""
+    if role != "admin":
+        return keyboard([ADMIN_SCHEDULE, SUPPORT_TICKETS], [MAIN_MENU])
     return keyboard(
         [ADMIN_SCHEDULE, ADMIN_CLIENTS],
         [SUPPORT_TICKETS, ADMIN_FINANCE],

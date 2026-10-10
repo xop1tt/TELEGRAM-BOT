@@ -67,7 +67,7 @@ class DomainPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.admin_pool.close()
 
     async def _user(self, telegram_id, credits):
-        await self.repo.get_or_create_profile(telegram_id, "Участник", False)
+        await self.repo.get_or_create_profile(telegram_id, "Участник")
         async with self.pool.acquire() as connection:
             await connection.execute(
                 "UPDATE bot_users SET lesson_credits = $2 WHERE telegram_id = $1",
@@ -254,7 +254,7 @@ class DomainPostgresTests(unittest.IsolatedAsyncioTestCase):
 
     # 6. Токен веб-сессии не хранится в открытом виде.
     async def test_session_token_is_stored_only_as_sha256(self):
-        await self.repo.get_or_create_profile(400, "Анна", False)
+        await self.repo.get_or_create_profile(400, "Анна")
         user = await self.repo.get_or_create_web_user_from_telegram(400, "Анна")
         token = "raw-cookie-token"
         await self.repo.create_web_session(

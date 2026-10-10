@@ -40,7 +40,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from ..class_catalog import CLASS_LABELS, CLASS_SHORT_LABELS
 from ..config import Config
-from ..database.repository import CLASS_KEYS
+from ..database.repository import CLASS_KEYS, STAFF_ADMIN
 from ..database.studio_models import (
     PackageGrantNotFoundError,
     SlotNotFoundError,
@@ -66,7 +66,7 @@ from ..presentation import (
     lessons_count,
     package_line,
 )
-from ..runtime.admin_access import get_admin_id
+from ..runtime.admin_access import get_admin_id, get_staff_id
 from ..services import (
     CreditService,
     HistoryService,
@@ -137,6 +137,42 @@ async def _admin(callback: CallbackQuery, repository: Any) -> Optional[int]:
     return admin_id
 
 
+async def callback_staff_role(
+    callback: CallbackQuery, repository: Any
+) -> Optional[str]:
+    message = callback.message
+    chat = getattr(message, "chat", None)
+    if message is None or getattr(chat, "type", None) != "private":
+        return None
+    profile = await repository.get_profile(callback.from_user.id)
+    return profile.role if profile is not None else None
+
+
+async def _staff(
+    callback: CallbackQuery, repository: Any, slot_id: Optional[int] = None
+) -> Optional[int]:
+    """Сотрудник (администратор или преподаватель) — расписание и поддержка.
+
+    С ``slot_id`` преподаватель проходит только для своего занятия.
+    """
+    role = await callback_staff_role(callback, repository)
+    telegram_id = callback.from_user.id
+    if role is None:
+        await callback.answer("Доступно только сотрудникам студии.", show_alert=True)
+        actions_logger().warning("action=denied actor_id=%s", telegram_id)
+        return None
+    if (
+        slot_id is not None
+        and role != STAFF_ADMIN
+        and not await repository.is_slot_teacher(slot_id, telegram_id)
+    ):
+        await callback.answer(
+            "Это занятие ведёт другой преподаватель.", show_alert=True
+        )
+        return None
+    return telegram_id
+
+
 async def _set_pending(state: FSMContext, **action: Any) -> None:
     action["expires_at"] = time.time() + CONFIRMATION_TTL_SECONDS
     await state.set_state(None)
@@ -200,10 +236,18 @@ def slot_button_text(slot: Any) -> str:
     )
 
 
-async def schedule_screen(repository: Any) -> tuple[str, InlineKeyboardMarkup]:
-    slots = await ScheduleService(repository).admin_schedule(limit=25)
+async def schedule_screen(
+    repository: Any, viewer_id: Optional[int] = None
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Расписание админки; преподаватель (``viewer_id`` с ролью teacher)
+    видит только свои занятия и не создаёт новые."""
+    role = await repository.get_staff_role(viewer_id) if viewer_id is not None else None
+    is_teacher = role is not None and role != STAFF_ADMIN
+    slots = await ScheduleService(repository).admin_schedule(
+        limit=25, teacher_telegram_id=viewer_id if is_teacher else None
+    )
     lines = [
-        "🗓 Расписание занятий",
+        "🗓 Мои занятия" if is_teacher else "🗓 Расписание занятий",
         "Нажмите на занятие: участники, перенос, отмена, закрытие записи.",
         "❌ — отменено, 🔒 — запись закрыта, ▶️ — уже идёт.",
     ]
@@ -212,7 +256,8 @@ async def schedule_screen(repository: Any) -> tuple[str, InlineKeyboardMarkup]:
     rows = [
         [button(slot_button_text(slot), "a:s:{}".format(slot.id))] for slot in slots
     ]
-    rows.append([button("➕ Создать занятие", "a:new")])
+    if not is_teacher:
+        rows.append([button("➕ Создать занятие", "a:new")])
     return "\n".join(lines), markup(*rows)
 
 
@@ -237,6 +282,8 @@ async def slot_card(
             "Статус: {}".format(status),
         ]
     )
+    if slot.teacher_name:
+        lines.append("Преподаватель: {}".format(slot.teacher_name))
     if slot.status == "cancelled" and slot.cancel_reason:
         lines.append("Причина отмены: {}".format(slot.cancel_reason))
     if slot.rescheduled_at is not None:
@@ -287,21 +334,25 @@ async def _show_slot(callback: CallbackQuery, repository: Any, slot_id: int, not
 @router.message(F.text == ADMIN_SCHEDULE)
 @router.message(Command("slots"))
 async def open_schedule(message: Message, state: FSMContext, repository: Any) -> None:
-    if await get_admin_id(message, repository) is None:
-        await message.answer("Команда доступна только администратору студии.")
+    viewer_id = await get_staff_id(message, repository)
+    if viewer_id is None:
+        await message.answer("Команда доступна только сотрудникам студии.")
         return
     await state.clear()
-    text, reply_markup = await schedule_screen(repository)
+    text, reply_markup = await schedule_screen(repository, viewer_id)
     await message.answer(text, reply_markup=reply_markup)
 
 
 @router.message(Command("slot"))
 async def open_slot_command(message: Message, repository: Any) -> None:
-    if await get_admin_id(message, repository) is None:
-        await message.answer("Команда доступна только администратору студии.")
+    if await get_staff_id(message, repository) is None:
+        await message.answer("Команда доступна только сотрудникам студии.")
         return
     parts = (message.text or "").split()
     slot_id = parse_int(parts[1]) if len(parts) == 2 else None
+    if slot_id and await get_staff_id(message, repository, slot_id) is None:
+        await message.answer("Это занятие ведёт другой преподаватель.")
+        return
     screen = await slot_card(repository, slot_id) if slot_id else None
     if screen is None:
         await message.answer("Формат: /slot ID (ID — из «🗓 Расписание занятий»).")
@@ -311,16 +362,17 @@ async def open_slot_command(message: Message, repository: Any) -> None:
 
 @router.callback_query(F.data == "a:sch")
 async def show_schedule(callback: CallbackQuery, repository: Any, state: FSMContext):
-    if await _admin(callback, repository) is None:
+    viewer_id = await _staff(callback, repository)
+    if viewer_id is None:
         return
     await state.clear()
-    await show(callback, *await schedule_screen(repository))
+    await show(callback, *await schedule_screen(repository, viewer_id))
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("a:s:"))
 async def show_slot(callback: CallbackQuery, repository: Any) -> None:
-    if await _admin(callback, repository) is None:
+    if await _staff(callback, repository, slot_id=_tid(callback)) is None:
         return
     slot_id = parse_int((callback.data or "").split(":")[2])
     await _show_slot(callback, repository, slot_id or 0)
@@ -329,7 +381,7 @@ async def show_slot(callback: CallbackQuery, repository: Any) -> None:
 
 @router.callback_query(F.data.startswith("a:sp:"))
 async def show_slot_participants(callback: CallbackQuery, repository: Any) -> None:
-    if await _admin(callback, repository) is None:
+    if await _staff(callback, repository, slot_id=_tid(callback)) is None:
         return
     slot_id = parse_int((callback.data or "").split(":")[2]) or 0
     participants = await ScheduleService(repository).participants(
@@ -492,7 +544,7 @@ async def confirm_new_slot(
 async def start_reschedule(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
-    if await _admin(callback, repository) is None:
+    if await _staff(callback, repository, slot_id=_tid(callback)) is None:
         return
     slot_id = parse_int((callback.data or "").split(":")[2]) or 0
     slot = await ScheduleService(repository).get(slot_id)
@@ -514,10 +566,10 @@ async def start_reschedule(
 
 @router.message(AdminForm.waiting_for_reschedule_time)
 async def save_reschedule_time(message: Message, state: FSMContext, repository: Any):
-    if await get_admin_id(message, repository) is None:
+    slot_id = (await state.get_data()).get("reschedule_slot_id")
+    if await get_staff_id(message, repository, slot_id or 0) is None:
         await state.clear()
         return
-    slot_id = (await state.get_data()).get("reschedule_slot_id")
     slot = await ScheduleService(repository).get(slot_id) if slot_id else None
     if slot is None:
         await state.clear()
@@ -560,7 +612,7 @@ async def save_reschedule_time(message: Message, state: FSMContext, repository: 
 async def confirm_reschedule(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
-    admin_id = await _admin(callback, repository)
+    admin_id = await _staff(callback, repository, slot_id=_tid(callback))
     if admin_id is None:
         return
     slot_id = parse_int((callback.data or "").split(":")[2]) or 0
@@ -631,7 +683,7 @@ async def _cancel_confirmation(
 async def request_slot_cancel(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
-    if await _admin(callback, repository) is None:
+    if await _staff(callback, repository, slot_id=_tid(callback)) is None:
         return
     slot_id = parse_int((callback.data or "").split(":")[2]) or 0
     screen = await _cancel_confirmation(repository, slot_id, None)
@@ -647,7 +699,7 @@ async def request_slot_cancel(
 async def ask_cancel_reason(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
-    if await _admin(callback, repository) is None:
+    if await _staff(callback, repository, slot_id=_tid(callback)) is None:
         return
     slot_id = parse_int((callback.data or "").split(":")[2]) or 0
     await state.set_state(AdminForm.waiting_for_cancel_reason)
@@ -661,7 +713,8 @@ async def ask_cancel_reason(
 
 @router.message(AdminForm.waiting_for_cancel_reason)
 async def save_cancel_reason(message: Message, state: FSMContext, repository: Any):
-    if await get_admin_id(message, repository) is None:
+    cancel_slot_id = (await state.get_data()).get("cancel_slot_id") or 0
+    if await get_staff_id(message, repository, cancel_slot_id) is None:
         await state.clear()
         return
     try:
@@ -683,7 +736,7 @@ async def save_cancel_reason(message: Message, state: FSMContext, repository: An
 async def confirm_slot_cancel(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
-    admin_id = await _admin(callback, repository)
+    admin_id = await _staff(callback, repository, slot_id=_tid(callback))
     if admin_id is None:
         return
     slot_id = parse_int((callback.data or "").split(":")[2]) or 0
@@ -723,7 +776,7 @@ async def confirm_slot_cancel(
 @router.callback_query(F.data.startswith("a:sc:"))
 @router.callback_query(F.data.startswith("a:so:"))
 async def toggle_slot(callback: CallbackQuery, repository: Any) -> None:
-    admin_id = await _admin(callback, repository)
+    admin_id = await _staff(callback, repository, slot_id=_tid(callback))
     if admin_id is None:
         return
     parts = (callback.data or "").split(":")
@@ -754,7 +807,7 @@ async def toggle_slot(callback: CallbackQuery, repository: Any) -> None:
 async def start_capacity_change(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
-    if await _admin(callback, repository) is None:
+    if await _staff(callback, repository, slot_id=_tid(callback)) is None:
         return
     slot_id = parse_int((callback.data or "").split(":")[2]) or 0
     await state.set_state(AdminForm.waiting_for_capacity_change)
@@ -768,7 +821,9 @@ async def start_capacity_change(
 
 @router.message(AdminForm.waiting_for_capacity_change)
 async def save_capacity_change(message: Message, state: FSMContext, repository: Any):
-    admin_id = await get_admin_id(message, repository)
+    admin_id = await get_staff_id(
+        message, repository, (await state.get_data()).get("capacity_slot_id") or 0
+    )
     if admin_id is None:
         await state.clear()
         return
@@ -1443,8 +1498,10 @@ async def tickets_screen(repository: Any) -> tuple[str, InlineKeyboardMarkup]:
 
 
 async def ticket_screen(
-    repository: Any, ticket_id: int, notice: str = ""
+    repository: Any, ticket_id: int, notice: str = "", viewer_id: Optional[int] = None
 ) -> Optional[tuple[str, InlineKeyboardMarkup]]:
+    """Переписка; кнопка «Клиент» — только администратору (у преподавателя
+    нет доступа к карточкам участников)."""
     thread = await SupportService(repository, None, None).thread(ticket_id)
     if thread is None:
         return None
@@ -1478,7 +1535,8 @@ async def ticket_screen(
         )
     else:
         rows.append([button("↩️ Открыть снова", "a:to:{}".format(thread.id))])
-    rows.append([button("👤 Клиент", "a:c:{}".format(thread.telegram_id))])
+    if viewer_id is None or await repository.get_staff_role(viewer_id) == STAFF_ADMIN:
+        rows.append([button("👤 Клиент", "a:c:{}".format(thread.telegram_id))])
     rows.append([button("⬅️ Все обращения", "a:tk")])
     text = "\n".join(lines).strip()
     return text[:4000], markup(*rows)
@@ -1487,8 +1545,8 @@ async def ticket_screen(
 @router.message(F.text == SUPPORT_TICKETS)
 @router.message(Command("support_tickets"))
 async def open_tickets(message: Message, state: FSMContext, repository: Any) -> None:
-    if await get_admin_id(message, repository) is None:
-        await message.answer("Команда доступна только администратору студии.")
+    if await get_staff_id(message, repository) is None:
+        await message.answer("Команда доступна только сотрудникам студии.")
         return
     await state.clear()
     text, reply_markup = await tickets_screen(repository)
@@ -1497,7 +1555,7 @@ async def open_tickets(message: Message, state: FSMContext, repository: Any) -> 
 
 @router.callback_query(F.data == "a:tk")
 async def show_tickets(callback: CallbackQuery, repository: Any) -> None:
-    if await _admin(callback, repository) is None:
+    if await _staff(callback, repository) is None:
         return
     await show(callback, *await tickets_screen(repository))
     await callback.answer()
@@ -1505,9 +1563,10 @@ async def show_tickets(callback: CallbackQuery, repository: Any) -> None:
 
 @router.callback_query(F.data.startswith("a:t:"))
 async def show_ticket(callback: CallbackQuery, repository: Any) -> None:
-    if await _admin(callback, repository) is None:
+    viewer_id = await _staff(callback, repository)
+    if viewer_id is None:
         return
-    screen = await ticket_screen(repository, _tid(callback))
+    screen = await ticket_screen(repository, _tid(callback), viewer_id=viewer_id)
     if screen is None:
         await callback.answer("Обращение не найдено.", show_alert=True)
         return
@@ -1519,7 +1578,7 @@ async def show_ticket(callback: CallbackQuery, repository: Any) -> None:
 async def start_ticket_reply(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
-    if await _admin(callback, repository) is None:
+    if await _staff(callback, repository) is None:
         return
     await state.set_state(AdminForm.waiting_for_support_reply)
     await state.update_data(reply_ticket_id=_tid(callback))
@@ -1532,7 +1591,7 @@ async def start_ticket_reply(
 
 @router.message(AdminForm.waiting_for_support_reply)
 async def save_ticket_reply(message: Message, state: FSMContext, repository: Any):
-    admin_id = await get_admin_id(message, repository)
+    admin_id = await get_staff_id(message, repository)
     if admin_id is None:
         await state.clear()
         return
@@ -1545,7 +1604,7 @@ async def save_ticket_reply(message: Message, state: FSMContext, repository: Any
     result = await deliver_support_reply(
         message.bot, repository, ticket_id, admin_id, body
     )
-    screen = await ticket_screen(repository, ticket_id, result)
+    screen = await ticket_screen(repository, ticket_id, result, viewer_id=admin_id)
     if screen is None:
         await message.answer(result)
         return
@@ -1554,7 +1613,7 @@ async def save_ticket_reply(message: Message, state: FSMContext, repository: Any
 
 @router.callback_query(F.data.startswith("a:tc:"))
 async def close_ticket(callback: CallbackQuery, repository: Any) -> None:
-    admin_id = await _admin(callback, repository)
+    admin_id = await _staff(callback, repository)
     if admin_id is None:
         return
     ticket_id = _tid(callback)
@@ -1565,6 +1624,7 @@ async def close_ticket(callback: CallbackQuery, repository: Any) -> None:
         repository,
         ticket_id,
         "Обращение закрыто, участник уведомлён." if closed else "Уже закрыто.",
+        viewer_id=admin_id,
     )
     if screen is not None:
         await show(callback, *screen)
@@ -1573,7 +1633,7 @@ async def close_ticket(callback: CallbackQuery, repository: Any) -> None:
 
 @router.callback_query(F.data.startswith("a:to:"))
 async def reopen_ticket(callback: CallbackQuery, repository: Any) -> None:
-    admin_id = await _admin(callback, repository)
+    admin_id = await _staff(callback, repository)
     if admin_id is None:
         return
     ticket_id = _tid(callback)
@@ -1588,6 +1648,7 @@ async def reopen_ticket(callback: CallbackQuery, repository: Any) -> None:
         repository,
         ticket_id,
         "Обращение снова открыто." if reopened else "Обращение не найдено.",
+        viewer_id=admin_id,
     )
     if screen is not None:
         await show(callback, *screen)

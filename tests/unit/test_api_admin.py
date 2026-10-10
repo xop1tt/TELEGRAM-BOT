@@ -8,7 +8,7 @@ from flamenco_bot.payments import YooKassaClient
 from flamenco_bot.runtime.security import AuthRateLimiter, SupportRateLimiter
 from flamenco_bot.services import AuthService
 
-from tests.pg import PostgresApiTestCase, PostgresTestCase
+from tests.pg import PostgresApiTestCase, PostgresTestCase, sql
 from .test_api_payments import BOT_TOKEN, sign_telegram_payload
 
 
@@ -36,9 +36,18 @@ class ApiTestBase(PostgresApiTestCase):
         self.assertEqual(response.status_code, 201)
         return response.json()
 
-    def make_admin(self, user_id):
-        self.assertTrue(
-            self.run_async(self.repository.set_web_user_admin(user_id, True))
+    def make_admin(self, user_id=None, telegram_id=900, role="admin", client=None):
+        """Привязывает Telegram к текущему аккаунту и даёт ему роль
+        (права — только роль привязанного Telegram в staff_members)."""
+        self.link_telegram(telegram_id, client=client)
+        self.run_async(
+            sql(
+                self.repository,
+                "INSERT INTO staff_members (telegram_id, role) VALUES ($1, $2) "
+                "ON CONFLICT (telegram_id) DO UPDATE SET role = EXCLUDED.role",
+                telegram_id,
+                role,
+            )
         )
 
     def link_telegram(self, telegram_id=900, client=None):
@@ -76,36 +85,130 @@ class AdminApiTests(ApiTestBase):
         )
         self.assertEqual(response.status_code, 403)
 
-    def test_me_reports_admin_flag(self):
+    def test_me_reports_role(self):
         user = self.register()
-        self.assertFalse(self.client.get("/api/auth/me").json()["is_admin"])
+        me = self.client.get("/api/auth/me").json()
+        self.assertFalse(me["is_admin"])
+        self.assertIsNone(me["role"])
         self.make_admin(user["id"])
-        self.assertTrue(self.client.get("/api/auth/me").json()["is_admin"])
+        me = self.client.get("/api/auth/me").json()
+        self.assertTrue(me["is_admin"])
+        self.assertEqual(me["role"], "admin")
 
-    def test_bot_admin_with_linked_telegram_is_site_admin(self):
+    def test_account_without_linked_telegram_has_no_rights(self):
+        # Роль привязана к Telegram ID: аккаунт по email без Telegram —
+        # не сотрудник, даже если когда-то был users.is_admin.
+        user = self.register()
         self.run_async(
-            self.repository.get_or_create_profile(
-                telegram_id=901, user_name="Админ бота", is_admin=True
+            sql(
+                self.repository,
+                "UPDATE users SET is_admin = TRUE WHERE id = $1",
+                user["id"],
             )
         )
-        self.register("botadmin@example.com")
-        self.link_telegram(901)
-        self.assertTrue(self.client.get("/api/auth/me").json()["is_admin"])
-        self.assertEqual(self.client.get("/api/admin/dashboard").status_code, 200)
+        self.assertFalse(self.client.get("/api/auth/me").json()["is_admin"])
+        self.assertEqual(self.client.get("/api/admin/dashboard").status_code, 403)
+
+    # ---------- роли ----------
+
+    def test_teacher_sees_only_own_slots_and_no_admin_sections(self):
+        self.register("admin@example.com")
+        self.make_admin()
+        teacher_client = self.make_client(self.client.app)
+        self.register("teacher@example.com", client=teacher_client)
+        self.make_admin(telegram_id=901, role="teacher", client=teacher_client)
+        own = self.client.post(
+            "/api/admin/slots",
+            json={
+                "class_key": "beginner",
+                "starts_at": self.future(),
+                "capacity": 5,
+                "teacher_telegram_id": 901,
+            },
+        ).json()
+        other = self.client.post(
+            "/api/admin/slots",
+            json={"class_key": "beginner", "starts_at": self.future(4), "capacity": 5},
+        ).json()
+        self.assertEqual(own["teacher_telegram_id"], 901)
+        self.assertEqual(own["teacher_name"], "Админ")
+
+        listed = teacher_client.get("/api/admin/slots").json()
+        self.assertEqual([slot["id"] for slot in listed], [own["id"]])
+        self.assertEqual(
+            teacher_client.post(f"/api/admin/slots/{other['id']}/close").status_code,
+            404,
+        )
+        self.assertEqual(
+            teacher_client.post(f"/api/admin/slots/{own['id']}/close").json()["status"],
+            "closed",
+        )
+        for path in (
+            "/api/admin/dashboard",
+            "/api/admin/users",
+            "/api/admin/payments",
+            "/api/admin/staff",
+        ):
+            self.assertEqual(teacher_client.get(path).status_code, 403, path)
+        self.assertEqual(
+            teacher_client.post(
+                "/api/admin/slots",
+                json={
+                    "class_key": "beginner",
+                    "starts_at": self.future(),
+                    "capacity": 5,
+                },
+            ).status_code,
+            403,
+        )
+        self.assertEqual(teacher_client.get("/api/admin/support").status_code, 200)
+        # Публичное расписание показывает преподавателя.
+        public = self.client.get(f"/api/schedule/{own['id']}").json()
+        self.assertEqual(public["teacher_name"], "Админ")
+
+    def test_staff_management_and_last_admin_guard(self):
+        self.register()
+        self.make_admin()
+        self.run_async(self.repository.get_or_create_profile(902, "Мария"))
+
+        created = self.client.put(
+            "/api/admin/staff/902",
+            json={"role": "teacher", "display_name": "  Мария  Гарсия "},
+        )
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["public_name"], "Мария Гарсия")
+        roles = {
+            m["telegram_id"]: m["role"]
+            for m in self.client.get("/api/admin/staff").json()
+        }
+        self.assertEqual(roles, {900: "admin", 902: "teacher"})
+
+        self.assertEqual(
+            self.client.put(
+                "/api/admin/staff/903", json={"role": "teacher"}
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.put("/api/admin/staff/902", json={"role": "boss"}).status_code,
+            422,
+        )
+        # Себя — последнего администратора — понизить или удалить нельзя.
+        self.assertEqual(
+            self.client.put(
+                "/api/admin/staff/900", json={"role": "teacher"}
+            ).status_code,
+            409,
+        )
+        self.assertEqual(self.client.delete("/api/admin/staff/900").status_code, 409)
+        self.assertEqual(self.client.delete("/api/admin/staff/902").status_code, 204)
+        self.assertEqual(self.client.delete("/api/admin/staff/902").status_code, 404)
+        audit = self.run_async(self.repository.list_staff_audit())
+        self.assertEqual(
+            [entry.action for entry in audit], ["staff_removed", "staff_role_set"]
+        )
 
     # ---------- сводка и нагрузка ----------
-
-    def test_admin_without_telegram_can_read_but_not_change(self):
-        user = self.register()
-        self.make_admin(user["id"])
-        self.assertEqual(self.client.get("/api/admin/dashboard").status_code, 200)
-        self.assertEqual(self.client.get("/api/admin/metrics").status_code, 200)
-        response = self.client.post(
-            "/api/admin/slots",
-            json={"class_key": "beginner", "starts_at": self.future(), "capacity": 5},
-        )
-        self.assertEqual(response.status_code, 409)
-        self.assertIn("Telegram", response.json()["detail"])
 
     def test_metrics_report_requests_process_and_database(self):
         user = self.register()
@@ -120,7 +223,6 @@ class AdminApiTests(ApiTestBase):
     def test_dashboard_counts_today_and_week(self):
         user = self.register()
         self.make_admin(user["id"])
-        self.link_telegram(900)
         for days in (1, 2):
             response = self.client.post(
                 "/api/admin/slots",
@@ -141,7 +243,6 @@ class AdminApiTests(ApiTestBase):
     def test_schedule_lifecycle(self):
         user = self.register()
         self.make_admin(user["id"])
-        self.link_telegram(900)
         created = self.client.post(
             "/api/admin/slots",
             json={
@@ -179,7 +280,6 @@ class AdminApiTests(ApiTestBase):
     def test_create_slot_validates_input(self):
         user = self.register()
         self.make_admin(user["id"])
-        self.link_telegram(900)
         past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         for payload in (
             {"class_key": "unknown", "starts_at": self.future(), "capacity": 5},
@@ -322,27 +422,16 @@ class CredentialsApiTests(ApiTestBase):
             self.assertEqual(response.status_code, 422, payload)
 
 
-class EnsureAdminAccountTests(PostgresTestCase):
-    async def test_creates_and_promotes_admin(self):
-        repository = self.repository
-        service = AuthService(repository, BOT_TOKEN)
-        created = await service.ensure_admin_account("Boss@Example.com", PASSWORD)
-        self.assertTrue(created.is_admin)
-        self.assertEqual(created.email, "boss@example.com")
-
-        member = await service.register_with_email(
-            "member@example.com", PASSWORD, "Участник"
-        )
-        self.assertFalse(member.is_admin)
-        promoted = await service.ensure_admin_account(
-            "member@example.com", "new-password-123"
-        )
-        self.assertEqual(promoted.id, member.id)
-        self.assertTrue(promoted.is_admin)
-        authenticated = await service.authenticate_with_email(
-            "member@example.com", "new-password-123"
-        )
-        self.assertEqual(authenticated.id, member.id)
+class BootstrapAdminTests(PostgresTestCase):
+    async def test_server_command_creates_profile_and_admin_role(self):
+        member = await self.repository.bootstrap_admin(4242, "Владелец")
+        self.assertEqual((member.role, member.user_name), ("admin", "Владелец"))
+        profile = await self.repository.get_profile(4242)
+        self.assertTrue(profile.is_admin)
+        # Повтор не меняет имя уже существующего профиля.
+        again = await self.repository.bootstrap_admin(4242, "Другое имя")
+        self.assertEqual(again.user_name, "Владелец")
+        self.assertFalse(await self.repository.revoke_staff_from_server(4243))
 
 
 if __name__ == "__main__":

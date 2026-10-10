@@ -20,7 +20,7 @@ from . import (
 from .main_menu import ensure_profile
 from ...handlers.states import AccountForm
 from ...presentation import balance_line, website_line
-from ...runtime.admin_access import get_admin_id
+from ...runtime.admin_access import get_staff_role
 from ...services import InvalidUserNameError, normalize_user_name
 
 
@@ -52,9 +52,7 @@ async def profile_text(message: Message, repository: Any) -> str:
 
 async def _menu(message: Message, repository: Any):
     """После ввода имени/телефона — снова главное меню вместо поля ввода."""
-    return main_menu_keyboard(
-        is_admin=await get_admin_id(message, repository) is not None
-    )
+    return main_menu_keyboard(role=await get_staff_role(message, repository))
 
 
 @router.message(F.text == PROFILE)

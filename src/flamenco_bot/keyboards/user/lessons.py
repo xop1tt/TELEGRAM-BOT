@@ -56,7 +56,6 @@ async def ensure_callback_profile(callback: CallbackQuery, repository: Any) -> N
     await repository.get_or_create_profile(
         telegram_id=sender.id,
         user_name=sender.full_name.strip() or "Участник студии",
-        is_admin=False,
     )
 
 

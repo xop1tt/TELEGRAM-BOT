@@ -68,11 +68,11 @@ class ProductFlowsPostgresTests(unittest.IsolatedAsyncioTestCase):
         await apply_migrations(self.pools[-1])
         await self.bot_repo.initialize()
         self.api_repo = await self._repository()
-        await self.bot_repo.get_or_create_profile(ADMIN_ID, "Админ", True)
+        await self.bot_repo.get_or_create_profile(ADMIN_ID, "Админ")
         async with self.admin_pool.acquire() as connection:
             await connection.execute(
-                'UPDATE "{}".bot_users SET is_admin = TRUE '
-                "WHERE telegram_id = $1".format(self.schema),
+                'INSERT INTO "{}".staff_members (telegram_id, role) '
+                "VALUES ($1, 'admin')".format(self.schema),
                 ADMIN_ID,
             )
         self.session = RecordingSession()
@@ -120,7 +120,7 @@ class ProductFlowsPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
 
     async def _paid(self, telegram_id, lessons=4):
-        await self.bot_repo.get_or_create_profile(telegram_id, "Участник", False)
+        await self.bot_repo.get_or_create_profile(telegram_id, "Участник")
         attempt = await self.bot_repo.begin_lesson_payment_attempt(
             telegram_id, "pack_4", "Абонемент на 4 занятия", lessons, 360000
         )

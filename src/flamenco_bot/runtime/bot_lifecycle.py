@@ -5,7 +5,7 @@ import sys
 from time import monotonic
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Sequence
 from os import walk
 
 
@@ -58,7 +58,6 @@ class RestartController:
         self,
         bot: Any,
         dispatcher: Any,
-        admins: list[int],
         logger: logging.Logger,
         source_root: Path,
         check_interval: float = CODE_CHECK_INTERVAL_SECONDS,
@@ -69,7 +68,9 @@ class RestartController:
     ) -> None:
         self.bot = bot
         self.dispatcher = dispatcher
-        self.admins = tuple(admins)
+        # Администраторы из БД (staff_members); задаётся после подключения
+        # к PostgreSQL — до него сообщать о сбое некому, остаётся журнал.
+        self.admin_ids: Optional[Callable[[], Awaitable[Sequence[int]]]] = None
         self.logger = logger
         self.source_root = source_root
         self.check_interval = check_interval
@@ -84,7 +85,14 @@ class RestartController:
         self.started_at = monotonic()
 
     async def notify_admins(self, text: str) -> None:
-        for admin_id in self.admins:
+        if self.admin_ids is None:
+            return
+        try:
+            admin_ids = await self.admin_ids()
+        except Exception:
+            self.logger.exception("Failed to load admins for lifecycle notification")
+            return
+        for admin_id in admin_ids:
             try:
                 await self.bot.send_message(chat_id=admin_id, text=text)
             except Exception:

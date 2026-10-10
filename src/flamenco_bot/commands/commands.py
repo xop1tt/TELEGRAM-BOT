@@ -40,22 +40,36 @@ def get_bot_commands() -> list[BotCommand]:
     return get_client_commands() + get_admin_commands()
 
 
-async def register_commands(bot: Any, repository: Any, logger: logging.Logger) -> None:
-    """Клиентам — клиентские команды, администраторам — полный список.
+def get_teacher_commands() -> list[BotCommand]:
+    return [
+        BotCommand(command="admin", description="Админ-меню"),
+        BotCommand(command="slots", description="Мои занятия"),
+        BotCommand(command="slot", description="Карточка занятия: /slot ID"),
+        BotCommand(command="support_tickets", description="Обращения поддержки"),
+    ]
 
-    Список администраторов берётся из БД при запуске: администратор,
-    назначенный позже, увидит свои команды после перезапуска бота (сами
-    команды и так проверяют права при вызове).
+
+async def register_commands(bot: Any, repository: Any, logger: logging.Logger) -> None:
+    """Клиентам — клиентские команды, сотрудникам — команды их роли.
+
+    Список сотрудников берётся из БД при запуске: сотрудник, назначенный
+    позже, увидит свои команды после перезапуска бота (сами команды и так
+    проверяют права при вызове).
     """
     await bot.set_my_commands(get_client_commands(), scope=BotCommandScopeDefault())
-    for admin_id in await repository.list_admin_ids():
+    for member in await repository.list_staff():
+        commands = (
+            get_bot_commands()
+            if member.role == "admin"
+            else get_client_commands() + get_teacher_commands()
+        )
         try:
             await bot.set_my_commands(
-                get_bot_commands(), scope=BotCommandScopeChat(chat_id=admin_id)
+                commands, scope=BotCommandScopeChat(chat_id=member.telegram_id)
             )
         except TelegramAPIError as error:
             logger.warning(
-                "Admin command menu not set admin_id=%s error_type=%s",
-                admin_id,
+                "Staff command menu not set telegram_id=%s error_type=%s",
+                member.telegram_id,
                 type(error).__name__,
             )

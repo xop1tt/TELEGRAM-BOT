@@ -29,7 +29,6 @@ jobs:
           --health-retries 5
     env:
       BOT_TOKEN: 123456:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-      ADMINS: 123456789
       ENV: development
       TEST_DATABASE_URL: postgresql://bot:bot@localhost:5432/bot
       # Миграции — в репозитории базы данных; интеграционные тесты создают

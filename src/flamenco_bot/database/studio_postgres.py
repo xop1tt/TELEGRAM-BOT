@@ -21,8 +21,10 @@ from typing import Any, Optional, Sequence, Tuple
 import asyncpg
 
 from .repository import (
+    SLOT_SELECT,
     ClassSlot,
     TelegramAlreadyLinkedError,
+    is_staff_admin,
 )
 from .studio_models import (
     LOW_BALANCE_THRESHOLD,
@@ -62,15 +64,7 @@ logger = logging.getLogger("bot.database")
 # Подтверждённый в боте вход сайт должен забрать за это время.
 CONNECT_CONSUME_WINDOW = timedelta(minutes=5)
 
-_SLOT_SELECT = """
-    SELECT slot.id, slot.class_key, slot.starts_at, slot.capacity, slot.status,
-           slot.cancelled_at, slot.cancel_reason, slot.rescheduled_at,
-           (
-               SELECT COUNT(*) FROM lesson_bookings AS booking
-               WHERE booking.slot_id = slot.id AND booking.status = 'confirmed'
-           )::INTEGER AS booked_count
-    FROM lesson_slots AS slot
-"""
+_SLOT_SELECT = SLOT_SELECT
 
 # Активные источники занятий участника (успешные платежи и действующие
 # выдачи) с суммой ledger по каждому — в порядке списания (FIFO).
@@ -234,11 +228,7 @@ class PostgresStudioMixin:
 
     @staticmethod
     async def _require_admin(connection: Any, actor_telegram_id: int) -> None:
-        is_admin = await connection.fetchval(
-            "SELECT is_admin FROM bot_users WHERE telegram_id = $1",
-            actor_telegram_id,
-        )
-        if not is_admin:
+        if not await is_staff_admin(connection, actor_telegram_id):
             raise PermissionError("Действие доступно только администратору")
 
     @staticmethod

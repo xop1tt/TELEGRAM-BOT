@@ -167,7 +167,7 @@ class InterfacesSharePostgresTests(unittest.IsolatedAsyncioTestCase):
         return response.cookies["session"]
 
     async def _grant(self, telegram_id, credits):
-        await self.bot_repo.get_or_create_profile(telegram_id, "Участник", False)
+        await self.bot_repo.get_or_create_profile(telegram_id, "Участник")
         async with self.admin_pool.acquire() as connection:
             await connection.execute(
                 'UPDATE "{}".bot_users SET lesson_credits = $2 '

@@ -35,12 +35,16 @@ class ScheduleService:
         self,
         class_key: Optional[str] = None,
         limit: int = 30,
+        teacher_telegram_id: Optional[int] = None,
     ) -> Sequence[ClassSlot]:
+        """Расписание админки; ``teacher_telegram_id`` — только занятия
+        этого преподавателя (так его видит преподаватель)."""
         return await self.repository.list_class_slots(
             class_key=class_key,
             limit=limit,
             include_cancelled=True,
             starts_after=datetime.now(timezone.utc) - ADMIN_SCHEDULE_LOOKBACK,
+            teacher_telegram_id=teacher_telegram_id,
         )
 
     async def get(self, slot_id: int) -> Optional[ClassSlot]:
@@ -52,13 +56,19 @@ class ScheduleService:
         starts_at: datetime,
         capacity: int,
         admin_telegram_id: int,
+        teacher_telegram_id: Optional[int] = None,
     ) -> ClassSlot:
         """``ValueError`` — неизвестный формат, время без пояса или в прошлом,
-        вместимость вне 1–100 (проверяет репозиторий)."""
+        вместимость вне 1–100 (проверяет репозиторий); ``LookupError`` —
+        преподаватель не сотрудник."""
         if class_key not in CLASS_KEYS:
             raise ValueError("Неизвестный формат занятия")
         slot = await self.repository.create_class_slot(
-            class_key, starts_at, capacity, admin_telegram_id
+            class_key,
+            starts_at,
+            capacity,
+            admin_telegram_id,
+            teacher_telegram_id=teacher_telegram_id,
         )
         logger.info(
             "Class slot created slot_id=%s admin_id=%s", slot.id, admin_telegram_id

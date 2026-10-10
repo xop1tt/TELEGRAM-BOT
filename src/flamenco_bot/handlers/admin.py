@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from ..config import Config
-from ..runtime.admin_access import get_admin_id
+from ..runtime.admin_access import get_admin_id, get_staff_role
 from ..runtime.logging_utils import create_admin_actions_logger
 from ..runtime.bot_lifecycle import RestartController
 from .states import AdminForm
@@ -83,18 +83,17 @@ async def admin_command(
     state: FSMContext,
     repository: Any,
 ) -> None:
-    if await _deny_non_admin(message, repository):
+    role = await get_staff_role(message, repository)
+    if role is None:
+        await message.answer("Команда доступна только сотрудникам студии.")
         return
 
     await state.clear()
     await message.answer(
         "Админ-меню. Выберите действие:",
-        reply_markup=admin_menu_keyboard(),
+        reply_markup=admin_menu_keyboard(role),
     )
-    logger.info(
-        "Opened admin menu telegram_id=%s",
-        await _admin_id(message, repository),
-    )
+    logger.info("Opened admin menu telegram_id=%s role=%s", message.from_user.id, role)
 
 
 @router.message(F.text == ADMIN_MENU)
@@ -145,9 +144,7 @@ async def leave_admin_menu(
     await state.clear()
     await message.answer(
         "Главное меню студии фламенко.",
-        reply_markup=main_menu_keyboard(
-            is_admin=await _admin_id(message, repository) is not None
-        ),
+        reply_markup=main_menu_keyboard(role=await get_staff_role(message, repository)),
     )
 
 

@@ -25,14 +25,16 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.logger = logging.Logger("test.lifecycle")
 
     def make_controller(self, directory, **kwargs):
-        return RestartController(
+        controller = RestartController(
             bot=self.bot,
             dispatcher=self.dispatcher,
-            admins=[8373364453, 123456789],
             logger=self.logger,
             source_root=Path(directory),
             **kwargs,
         )
+        # Администраторы из БД (staff_members) — после подключения к ней.
+        controller.admin_ids = AsyncMock(return_value=[8373364453, 123456789])
+        return controller
 
     async def test_code_snapshot_includes_app_python_and_excludes_tests_logs_venv(self):
         with tempfile.TemporaryDirectory() as directory:

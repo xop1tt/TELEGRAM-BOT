@@ -35,7 +35,7 @@ class CreditAdjustmentHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.message = FakeMessage(telegram_id=ADMIN_ID)
         self.state = FakeState()
         self.repository = FakeRepository()
-        self.admin = replace(self.repository.profile, is_admin=True)
+        self.admin = replace(self.repository.profile, is_admin=True, role="admin")
         self.target = replace(
             self.repository.profile,
             telegram_id=TARGET_ID,
@@ -229,7 +229,7 @@ class CreditAuditHandlerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.message = FakeMessage(telegram_id=ADMIN_ID, text="/credits_audit")
         self.repository = FakeRepository()
-        admin = replace(self.repository.profile, is_admin=True)
+        admin = replace(self.repository.profile, is_admin=True, role="admin")
         self.repository.get_profile = AsyncMock(return_value=admin)
         self.repository.get_credit_reconciliation = AsyncMock()
         log_patch = patch("flamenco_bot.handlers.admin.actions_logger")

@@ -3,7 +3,7 @@ from typing import Any
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from ...runtime.admin_access import get_admin_id
+from ...runtime.admin_access import get_staff_role
 from ...handlers.states import AccountForm, AdminForm
 from . import main_menu_keyboard
 from ..admin import admin_menu_keyboard
@@ -25,7 +25,7 @@ async def cancel_current_action(
     }:
         text = "Ввод отменён. Профиль не изменён — он в «👤 Профиль»."
         reply_markup = main_menu_keyboard(
-            is_admin=await get_admin_id(message, repository) is not None
+            role=await get_staff_role(message, repository)
         )
     elif (
         current_state
@@ -43,10 +43,10 @@ async def cancel_current_action(
             AdminForm.waiting_for_support_reply.state,
             AdminForm.waiting_for_client_adjustment.state,
         }
-        and await get_admin_id(message, repository) is not None
+        and (staff_role := await get_staff_role(message, repository)) is not None
     ):
         text = "Действие отменено."
-        reply_markup = admin_menu_keyboard()
+        reply_markup = admin_menu_keyboard(staff_role)
     else:
         text = (
             "Ввод отменён. Вы в главном меню."
@@ -54,7 +54,7 @@ async def cancel_current_action(
             else "Отменять нечего. Вы в главном меню."
         )
         reply_markup = main_menu_keyboard(
-            is_admin=await get_admin_id(message, repository) is not None
+            role=await get_staff_role(message, repository)
         )
 
     await message.answer(text, reply_markup=reply_markup)

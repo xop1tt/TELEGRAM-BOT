@@ -39,7 +39,7 @@ class StopLoop(Exception):
 class NotificationDispatcherTests(PostgresTestCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        await self.repository.get_or_create_profile(1001, "Анна", False)
+        await self.repository.get_or_create_profile(1001, "Анна")
         self.bot = SimpleNamespace(send_message=AsyncMock())
 
     async def _queue(self, kind="credits_adjusted", payload=None, key="k:1"):

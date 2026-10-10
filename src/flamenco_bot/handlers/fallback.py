@@ -4,7 +4,7 @@ from typing import Any
 from aiogram import Router
 from aiogram.types import Message
 
-from ..runtime.admin_access import get_admin_id
+from ..runtime.admin_access import get_staff_role
 from ..keyboards.user import main_menu_keyboard
 
 
@@ -17,9 +17,7 @@ async def fallback_message(message: Message, repository: Any) -> None:
     await message.answer(
         "Не понял сообщение. Выберите раздел в меню ниже или отправьте /help.\n"
         "Чтобы написать в студию, нажмите «💬 Поддержка».",
-        reply_markup=main_menu_keyboard(
-            is_admin=await get_admin_id(message, repository) is not None
-        ),
+        reply_markup=main_menu_keyboard(role=await get_staff_role(message, repository)),
     )
     logger.info(
         "Handled fallback telegram_id=%s",

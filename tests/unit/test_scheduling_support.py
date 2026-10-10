@@ -20,8 +20,8 @@ async def _grant_credits(repository, telegram_id: int, credits: int) -> None:
 class SchedulingAndSupportTests(PostgresTestCase):
     async def test_class_booking_is_immediate_idempotent_and_capacity_limited(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
-        await repository.get_or_create_profile(1002, "Мария", False)
+        await repository.get_or_create_profile(1001, "Анна")
+        await repository.get_or_create_profile(1002, "Мария")
         await _grant_credits(repository, 1001, 1)
         await _grant_credits(repository, 1002, 1)
         slot = await repository.create_class_slot(
@@ -45,8 +45,8 @@ class SchedulingAndSupportTests(PostgresTestCase):
 
     async def test_slot_capacity_cannot_be_lowered_below_confirmed_bookings(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
-        await repository.get_or_create_profile(1002, "Мария", False)
+        await repository.get_or_create_profile(1001, "Анна")
+        await repository.get_or_create_profile(1002, "Мария")
         await _grant_credits(repository, 1001, 1)
         await _grant_credits(repository, 1002, 1)
         slot = await repository.create_class_slot(
@@ -68,7 +68,7 @@ class SchedulingAndSupportTests(PostgresTestCase):
 
     async def test_support_ticket_can_be_replied_to_closed_and_reopened(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
+        await repository.get_or_create_profile(1001, "Анна")
 
         ticket_id, created = await repository.create_support_message(1001, "Помогите")
         same_ticket_id, created_again = await repository.create_support_message(
@@ -106,8 +106,8 @@ class SchedulingAndSupportTests(PostgresTestCase):
 
     async def test_list_bookings_for_telegram_id_excludes_other_users(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
-        await repository.get_or_create_profile(1002, "Мария", False)
+        await repository.get_or_create_profile(1001, "Анна")
+        await repository.get_or_create_profile(1002, "Мария")
         await _grant_credits(repository, 1001, 1)
         await _grant_credits(repository, 1002, 1)
         slot = await repository.create_class_slot(
@@ -128,8 +128,8 @@ class SchedulingAndSupportTests(PostgresTestCase):
 
     async def test_list_support_tickets_for_telegram_id_includes_closed_tickets(self):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
-        await repository.get_or_create_profile(1002, "Мария", False)
+        await repository.get_or_create_profile(1001, "Анна")
+        await repository.get_or_create_profile(1002, "Мария")
         ticket_id, _ = await repository.create_support_message(1001, "Помогите")
         await repository.close_support_ticket(ticket_id, 77)
         await repository.create_support_message(1002, "Другой вопрос")
@@ -150,7 +150,7 @@ class BookingCreditsAndCancellationTests(PostgresTestCase):
 
     async def _repository_with_slot(self, capacity=1, starts_in=timedelta(days=2)):
         repository = self.repository
-        await repository.get_or_create_profile(1001, "Анна", False)
+        await repository.get_or_create_profile(1001, "Анна")
         slot = await repository.create_class_slot(
             "beginner",
             datetime.now(timezone.utc) + starts_in,
@@ -261,7 +261,7 @@ class BookingCreditsAndCancellationTests(PostgresTestCase):
 
     async def test_cooldown_only_blocks_the_same_user_not_others(self):
         repository, slot = await self._repository_with_slot(capacity=2)
-        await repository.get_or_create_profile(1002, "Мария", False)
+        await repository.get_or_create_profile(1002, "Мария")
         await _grant_credits(repository, 1001, 2)
         await _grant_credits(repository, 1002, 1)
         await repository.book_class_slot(slot.id, 1001)

@@ -52,6 +52,7 @@ class AdminAccount:
     phone: Optional[str]
     lesson_credits: int
     is_admin: bool
+    role: Optional[str]
     registered_at: datetime
     last_seen_at: Optional[datetime]
 
@@ -191,14 +192,18 @@ class PostgresAdminMixin:
                        COALESCE(profile.user_name, account.display_name) AS name,
                        profile.phone,
                        COALESCE(profile.lesson_credits, 0) AS lesson_credits,
-                       COALESCE(account.is_admin, FALSE)
-                           OR COALESCE(profile.is_admin, FALSE) AS is_admin,
+                       staff.role IS NOT DISTINCT FROM 'admin' AS is_admin,
+                       staff.role,
                        LEAST(account.created_at, profile.registered_at)
                            AS registered_at,
                        profile.last_seen_at
                 FROM users AS account
                 FULL OUTER JOIN bot_users AS profile
                     ON profile.telegram_id = account.telegram_id
+                LEFT JOIN staff_members AS staff
+                    ON staff.telegram_id = COALESCE(
+                        profile.telegram_id, account.telegram_id
+                    )
                 WHERE $1 = ''
                    OR account.email ILIKE $2
                    OR account.display_name ILIKE $2

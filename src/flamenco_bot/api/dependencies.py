@@ -3,12 +3,13 @@
 import hmac
 import ipaddress
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from aiogram.exceptions import TelegramAPIError
 from fastapi import Cookie, Depends, HTTPException, Request, status
 
-from ..database.repository import WebUserRecord
+from ..database.repository import STAFF_ADMIN, WebUserRecord
 from ..runtime.security import AuthRateLimiter, SupportRateLimiter
 from ..services import (
     AdminNotifier,
@@ -123,33 +124,46 @@ async def require_telegram_linked_user(
     return current_user
 
 
-async def require_admin(
+@dataclass(frozen=True)
+class StaffActor:
+    """Сотрудник студии, выполняющий запрос: Telegram ID и роль."""
+
+    telegram_id: int
+    role: str
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == STAFF_ADMIN
+
+
+async def require_staff(
     current_user: WebUserRecord = Depends(get_current_user),
-) -> WebUserRecord:
-    """Администратор сайта: ``users.is_admin`` или администратор бота с
-    привязанным Telegram. Проверка — здесь, на каждом ``/api/admin/*``;
+) -> StaffActor:
+    """Сотрудник (администратор или преподаватель): роль привязанного
+    Telegram в staff_members. Проверка — здесь, на каждом ``/api/admin/*``;
     скрытая ссылка во фронтенде защитой не считается."""
-    if not current_user.is_admin:
-        logger.warning("Admin access denied user_id=%s", current_user.id)
+    if current_user.role is None or current_user.telegram_id is None:
+        logger.warning("Staff access denied user_id=%s", current_user.id)
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Недостаточно прав")
-    return current_user
+    return StaffActor(current_user.telegram_id, current_user.role)
 
 
-async def require_admin_actor(
-    current_user: WebUserRecord = Depends(require_admin),
-) -> int:
-    """Telegram ID администратора для изменяющих действий.
+async def require_admin(staff: StaffActor = Depends(require_staff)) -> StaffActor:
+    """Только администратор: финансы, участники, настройки, сотрудники."""
+    if not staff.is_admin:
+        logger.warning("Admin access denied telegram_id=%s", staff.telegram_id)
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Недостаточно прав")
+    return staff
 
-    Журналы расписания, поддержки и баланса в БД ведутся по Telegram ID
-    (как и в админке бота), поэтому изменять данные можно только с
-    привязанным Telegram — смотреть сводку и показатели можно и без него.
-    """
-    if current_user.telegram_id is None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Привяжите Telegram к аккаунту, чтобы изменять данные студии",
-        )
-    return current_user.telegram_id
+
+async def require_admin_actor(admin: StaffActor = Depends(require_admin)) -> int:
+    """Telegram ID администратора — журналы в БД ведутся по нему."""
+    return admin.telegram_id
+
+
+async def require_staff_actor(staff: StaffActor = Depends(require_staff)) -> int:
+    """Telegram ID сотрудника (поддержка: отвечает и преподаватель)."""
+    return staff.telegram_id
 
 
 def get_admin_notifier(request: Request) -> AdminNotifier:

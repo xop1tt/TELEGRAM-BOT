@@ -20,8 +20,8 @@ ADMIN_ID = 77
 class CabinetHandlerTests(PostgresTestCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        await self.repository.get_or_create_profile(USER_ID, "Анна", False)
-        await self.repository.get_or_create_profile(ADMIN_ID, "Админ", False)
+        await self.repository.get_or_create_profile(USER_ID, "Анна")
+        await self.repository.get_or_create_profile(ADMIN_ID, "Админ")
         await make_admin(self.repository, ADMIN_ID)
         self.state = FakeState()
 
@@ -258,7 +258,7 @@ class TelegramConnectConflictTests(PostgresTestCase):
         owner = await repository.create_web_user(
             "owner@example.org", "hash", "Владелец"
         )
-        await repository.get_or_create_profile(USER_ID, "Анна", False)
+        await repository.get_or_create_profile(USER_ID, "Анна")
         await repository.link_telegram_to_web_user(owner.id, USER_ID)
         other = await repository.create_web_user("bob@example.org", "hash", "Боб")
         started = await auth.start_telegram_connect("mirada_bot", other.id)

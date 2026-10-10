@@ -12,7 +12,7 @@ from aiogram.types import (
 )
 
 from ..keyboards.user import HELP, input_keyboard, main_menu_keyboard
-from ..runtime.admin_access import get_admin_id
+from ..runtime.admin_access import get_staff_role
 from ..runtime.security import SupportRateLimiter
 from ..services import (
     AdminNotifier,
@@ -92,7 +92,7 @@ async def submit_support_message(
             "Сообщение не отправлено: обращение было начато слишком давно. "
             "Чтобы написать в студию, нажмите «💬 Поддержка» ещё раз.",
             reply_markup=main_menu_keyboard(
-                is_admin=await get_admin_id(message, repository) is not None
+                role=await get_staff_role(message, repository)
             ),
         )
         return
@@ -119,7 +119,7 @@ async def submit_support_message(
         return
 
     await state.clear()
-    is_admin = await get_admin_id(message, repository) is not None
+    role = await get_staff_role(message, repository)
     report = submission.notifications
     if report.recipients == 0:
         confirmation = (
@@ -139,7 +139,7 @@ async def submit_support_message(
         ).format(submission.ticket_id)
     await message.answer(
         confirmation,
-        reply_markup=main_menu_keyboard(is_admin=is_admin),
+        reply_markup=main_menu_keyboard(role=role),
     )
 
 

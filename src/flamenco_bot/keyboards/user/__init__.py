@@ -11,6 +11,8 @@
   [❌ Отмена] (вернуться туда, откуда начат ввод) и [🏠 Главное меню].
 """
 
+from typing import Optional
+
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 from ..admin import ADMIN_MENU, BOT_STATUS
@@ -52,10 +54,14 @@ LEGACY_TO_SECTION = {
 }
 
 
-def main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
+def main_menu_keyboard(role: Optional[str] = None) -> ReplyKeyboardMarkup:
+    """Главное меню; сотрудникам (``role``) — ещё «Админ-меню», а
+    администратору — и «Состояние бота»."""
     rows = [[BOOK, MY_CLASSES], [PACKAGES, PURCHASES], [PROFILE, HELP]]
-    if is_admin:
+    if role == "admin":
         rows.append([ADMIN_MENU, BOT_STATUS])
+    elif role is not None:
+        rows.append([ADMIN_MENU])
     return keyboard(*rows)
 
 

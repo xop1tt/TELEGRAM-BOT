@@ -44,10 +44,11 @@ class CreditLedgerPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.repo = PostgresRepository(self.pool)
         await apply_migrations(self.pool)
         await self.repo.initialize()
-        await self.repo.get_or_create_profile(ADMIN_ID, "Админ", True)
+        await self.repo.get_or_create_profile(ADMIN_ID, "Админ")
         async with self.pool.acquire() as connection:
             await connection.execute(
-                "UPDATE bot_users SET is_admin = TRUE WHERE telegram_id = $1",
+                "INSERT INTO staff_members (telegram_id, role) VALUES ($1, 'admin') "
+                "ON CONFLICT (telegram_id) DO UPDATE SET role = 'admin'",
                 ADMIN_ID,
             )
 
@@ -62,7 +63,7 @@ class CreditLedgerPostgresTests(unittest.IsolatedAsyncioTestCase):
     # --- помощники -------------------------------------------------------
 
     async def _user(self, telegram_id):
-        await self.repo.get_or_create_profile(telegram_id, "Участник", False)
+        await self.repo.get_or_create_profile(telegram_id, "Участник")
 
     async def _balance(self, telegram_id):
         return await self.repo.get_lesson_credits(telegram_id)
@@ -491,11 +492,12 @@ class CreditLedgerPostgresTests(unittest.IsolatedAsyncioTestCase):
             try:
                 repo = PostgresRepository(pool)
                 await apply_migrations(pool, before)
-                await repo.get_or_create_profile(100, "Старый", False)
+                # Профиль — напрямую SQL: код репозитория рассчитан на
+                # актуальную схему (роли staff_members появились в 016).
                 async with pool.acquire() as connection:
                     await connection.execute(
-                        "UPDATE bot_users SET lesson_credits = 3 "
-                        "WHERE telegram_id = 100"
+                        "INSERT INTO bot_users (telegram_id, user_name, "
+                        "lesson_credits) VALUES (100, 'Старый', 3)"
                     )
                     await connection.execute(
                         """
@@ -539,10 +541,12 @@ class CreditLedgerPostgresTests(unittest.IsolatedAsyncioTestCase):
                         "lesson_bookings": "c",
                     },
                 )
-                await repo.get_or_create_profile(ADMIN_ID, "Админ", True)
+                await repo.get_or_create_profile(ADMIN_ID, "Админ")
                 async with pool.acquire() as connection:
                     await connection.execute(
-                        "UPDATE bot_users SET is_admin = TRUE WHERE telegram_id = $1",
+                        "INSERT INTO staff_members (telegram_id, role) "
+                        "VALUES ($1, 'admin') ON CONFLICT (telegram_id) "
+                        "DO UPDATE SET role = 'admin'",
                         ADMIN_ID,
                     )
                 result = await repo.adjust_lesson_credits(

@@ -88,9 +88,11 @@ class UserResponse(BaseModel):
     telegram_id: Optional[int]
     display_name: str
     created_at: datetime
-    # Право администратора проверяет backend на каждом /api/admin/*;
-    # сайту флаг нужен только чтобы показать ссылку на админку и окно нагрузки.
+    # Права проверяет backend на каждом /api/admin/*; сайту роль нужна
+    # только чтобы показать нужные разделы админки и окно нагрузки.
     is_admin: bool = False
+    # admin, teacher или None (не сотрудник).
+    role: Optional[str] = None
 
     @classmethod
     def from_record(cls, record: WebUserRecord) -> "UserResponse":
@@ -101,6 +103,7 @@ class UserResponse(BaseModel):
             display_name=record.display_name,
             created_at=record.created_at,
             is_admin=record.is_admin,
+            role=record.role,
         )
 
 
@@ -119,6 +122,8 @@ class ClassSlotResponse(BaseModel):
     # Занятие переносила студия (время уже новое).
     rescheduled: bool = False
     cancel_reason: Optional[str] = None
+    # Преподаватель (имя для расписания), если назначен.
+    teacher_name: Optional[str] = None
 
     @classmethod
     def from_record(cls, slot: ClassSlot) -> "ClassSlotResponse":
@@ -135,6 +140,7 @@ class ClassSlotResponse(BaseModel):
             and slot.starts_at > datetime.now(timezone.utc),
             rescheduled=slot.rescheduled_at is not None,
             cancel_reason=slot.cancel_reason,
+            teacher_name=slot.teacher_name,
         )
 
 
@@ -736,11 +742,16 @@ class AdminMetricsResponse(BaseModel):
 
 class AdminSlotResponse(ClassSlotResponse):
     booked: int = 0
+    teacher_telegram_id: Optional[int] = None
 
     @classmethod
     def from_record(cls, slot: ClassSlot) -> "AdminSlotResponse":
         base = ClassSlotResponse.from_record(slot)
-        return cls(**base.model_dump(), booked=slot.booked_count)
+        return cls(
+            **base.model_dump(),
+            booked=slot.booked_count,
+            teacher_telegram_id=slot.teacher_telegram_id,
+        )
 
 
 class AdminCreateSlotRequest(BaseModel):
@@ -748,6 +759,28 @@ class AdminCreateSlotRequest(BaseModel):
     # Время с часовым поясом (ISO 8601); без пояса — 422.
     starts_at: datetime
     capacity: int = Field(ge=1, le=100)
+    teacher_telegram_id: Optional[int] = Field(default=None, gt=0, le=MAX_DB_ID)
+
+
+class AdminSlotTeacherRequest(BaseModel):
+    # None — снять преподавателя.
+    teacher_telegram_id: Optional[int] = Field(default=None, gt=0, le=MAX_DB_ID)
+
+
+class StaffMemberResponse(BaseModel):
+    telegram_id: int
+    role: str
+    display_name: Optional[str]
+    user_name: str
+    public_name: str
+    phone: Optional[str]
+    has_web_account: bool
+    created_at: datetime
+
+
+class StaffRoleRequest(BaseModel):
+    role: str = Field(pattern="^(admin|teacher)$")
+    display_name: Optional[str] = Field(default=None, max_length=64)
 
 
 class AdminUpdateSlotRequest(BaseModel):

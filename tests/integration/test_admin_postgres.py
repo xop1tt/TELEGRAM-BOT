@@ -8,13 +8,15 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
-from tests.support import apply_migrations
+from tests.support import apply_migrations, db_migrate
 
 from flamenco_bot.database.repository import (
     EmailAlreadyRegisteredError,
     PostgresRepository,
 )
 from flamenco_bot.services import AdminService
+
+MIGRATIONS = db_migrate().MIGRATIONS_DIRECTORY
 
 
 DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -40,10 +42,11 @@ class AdminQueriesPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.repo = PostgresRepository(self.pool)
         await apply_migrations(self.pool)
         await self.repo.initialize()
-        await self.repo.get_or_create_profile(ADMIN_ID, "Админ", True)
+        await self.repo.get_or_create_profile(ADMIN_ID, "Админ")
         async with self.pool.acquire() as connection:
             await connection.execute(
-                "UPDATE bot_users SET is_admin = TRUE WHERE telegram_id = $1",
+                "INSERT INTO staff_members (telegram_id, role) VALUES ($1, 'admin') "
+                "ON CONFLICT (telegram_id) DO UPDATE SET role = 'admin'",
                 ADMIN_ID,
             )
 
@@ -55,21 +58,37 @@ class AdminQueriesPostgresTests(unittest.IsolatedAsyncioTestCase):
             )
         await self.admin_pool.close()
 
-    async def test_web_admin_flag_and_bot_admin(self):
+    async def test_site_rights_come_from_linked_telegram_role(self):
         user = await self.repo.create_web_user("a@example.com", "hash", "Анна")
         self.assertFalse(user.is_admin)
-        await self.repo.set_web_user_admin(user.id, True)
-        self.assertTrue((await self.repo.get_web_user_by_id(user.id)).is_admin)
+        self.assertIsNone(user.role)
 
-        # Администратор бота с привязанным Telegram — администратор сайта.
+        # Сотрудник с привязанным Telegram — сотрудник и на сайте.
         other = await self.repo.create_web_user("b@example.com", "hash", "Боб")
         await self.repo.link_telegram_to_web_user(other.id, ADMIN_ID)
-        self.assertTrue(
-            (await self.repo.get_web_user_by_email("b@example.com")).is_admin
-        )
+        linked = await self.repo.get_web_user_by_email("b@example.com")
+        self.assertTrue(linked.is_admin)
+        self.assertEqual(linked.role, "admin")
+
+    async def test_migration_016_moves_existing_admins_to_staff(self):
+        # ADMIN_ID назначен в setUp; миграция переносит и старые флаги:
+        # проверяем это на её же SQL поверх данных «до 016».
+        await self.repo.get_or_create_profile(321, "Старый админ")
+        async with self.pool.acquire() as connection:
+            await connection.execute("DELETE FROM staff_members")
+            await connection.execute(
+                "UPDATE bot_users SET is_admin = TRUE WHERE telegram_id = 321"
+            )
+            await connection.execute(
+                (MIGRATIONS / "016_staff_roles.sql").read_text(encoding="utf-8")
+            )
+            roles = await connection.fetch(
+                "SELECT telegram_id, role FROM staff_members ORDER BY telegram_id"
+            )
+        self.assertEqual([tuple(r) for r in roles], [(321, "admin")])
 
     async def test_set_credentials_only_once_and_unique(self):
-        await self.repo.get_or_create_profile(555, "Анна", False)
+        await self.repo.get_or_create_profile(555, "Анна")
         telegram_only = await self.repo.get_or_create_web_user_from_telegram(
             555, "Анна"
         )
@@ -94,7 +113,7 @@ class AdminQueriesPostgresTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dashboard_counts(self):
         now = datetime.now(timezone.utc)
-        await self.repo.get_or_create_profile(555, "Анна", False)
+        await self.repo.get_or_create_profile(555, "Анна")
         soon = await self.repo.create_class_slot(
             "beginner", now + timedelta(hours=2), 5, ADMIN_ID
         )
@@ -150,7 +169,7 @@ class AdminQueriesPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tickets[0].last_message, "Помогите")
 
     async def test_accounts_search_merges_web_account_and_profile(self):
-        await self.repo.get_or_create_profile(555, "Анна Петрова", False)
+        await self.repo.get_or_create_profile(555, "Анна Петрова")
         web = await self.repo.create_web_user("anna@example.com", "hash", "Анна")
         await self.repo.link_telegram_to_web_user(web.id, 555)
         await self.repo.create_web_user("solo@example.com", "hash", "Без Telegram")

@@ -115,7 +115,6 @@ async def pay_for_package(
     await repository.get_or_create_profile(
         telegram_id=telegram_id,
         user_name=callback.from_user.full_name.strip() or "Участник студии",
-        is_admin=False,
     )
     snapshot = LessonPackage(
         key=package.key,

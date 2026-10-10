@@ -61,7 +61,6 @@ async def main():
         lifecycle = RestartController(
             bot=bot,
             dispatcher=None,
-            admins=Config.ADMINS,
             logger=logger,
             source_root=Path(__file__).resolve().parent,
         )
@@ -102,6 +101,7 @@ async def main():
         dp.include_router(router)
 
         await repository.initialize()
+        lifecycle.admin_ids = repository.list_admin_ids
         heartbeat_path = heartbeat_path_from_env()
         await register_commands(bot, repository, logger)
         lifecycle_tasks = [

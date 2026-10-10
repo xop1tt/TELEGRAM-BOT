@@ -18,7 +18,7 @@ from ...presentation import (
     format_price,
     website_line,
 )
-from ...runtime.admin_access import get_admin_id
+from ...runtime.admin_access import get_staff_role
 from . import (
     ABOUT,
     BOOK,
@@ -59,7 +59,6 @@ async def ensure_profile(message: Message, repository: Any) -> Any:
     return await repository.get_or_create_profile(
         telegram_id=sender.id,
         user_name=user_name,
-        is_admin=False,
     )
 
 
@@ -85,9 +84,7 @@ async def send_main_menu(message: Message, repository: Any, text: str) -> None:
     summary = await account_summary(repository, sender.id) if sender else ""
     await message.answer(
         "{}\n\n{}".format(text, summary) if summary else text,
-        reply_markup=main_menu_keyboard(
-            is_admin=await get_admin_id(message, repository) is not None
-        ),
+        reply_markup=main_menu_keyboard(role=await get_staff_role(message, repository)),
     )
 
 

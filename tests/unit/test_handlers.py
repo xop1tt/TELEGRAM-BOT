@@ -105,7 +105,6 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
         self.repository.get_or_create_profile.assert_awaited_once_with(
             telegram_id=1001,
             user_name="Анна",
-            is_admin=False,
         )
         self.state.clear.assert_awaited_once()
         text = self.message.last_answer.args[0]
@@ -138,7 +137,9 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Фламенко для начинающих", self.message.last_answer.args[0])
 
     async def test_start_shows_admin_panel_from_database_profile(self):
-        self.repository.profile = replace(self.repository.profile, is_admin=True)
+        self.repository.profile = replace(
+            self.repository.profile, is_admin=True, role="admin"
+        )
         self.repository.get_or_create_profile.return_value = self.repository.profile
 
         await start_command(self.message, self.repository, self.state)
@@ -155,7 +156,9 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("/client", text)
         self.state.clear.assert_awaited_once()
 
-        self.repository.profile = replace(self.repository.profile, is_admin=True)
+        self.repository.profile = replace(
+            self.repository.profile, is_admin=True, role="admin"
+        )
         self.repository.get_profile.return_value = self.repository.profile
         await help_command(self.message, self.state, self.repository)
         self.assertIn("/client", self.message.last_answer.args[0])
@@ -218,7 +221,9 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
             main_menu_keyboard(),
         )
 
-        self.repository.profile = replace(self.repository.profile, is_admin=True)
+        self.repository.profile = replace(
+            self.repository.profile, is_admin=True, role="admin"
+        )
         self.repository.get_profile.return_value = self.repository.profile
         await self.state.set_state(AdminForm.waiting_for_search)
         await cancel_command(self.message, self.state, self.repository)
@@ -418,7 +423,9 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_admin_commands_are_access_controlled(self):
-        self.repository.profile = replace(self.repository.profile, is_admin=True)
+        self.repository.profile = replace(
+            self.repository.profile, is_admin=True, role="admin"
+        )
         self.repository.get_profile.return_value = self.repository.profile
         await admin_command(self.message, self.state, self.repository)
         self.assertEqual(
@@ -435,13 +442,31 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
                 "🏠 Главное меню",
             },
         )
-        self.repository.profile = replace(self.repository.profile, is_admin=False)
+        # Преподаватель: только свои занятия и поддержка.
+        self.repository.profile = replace(
+            self.repository.profile, is_admin=False, role="teacher"
+        )
         self.repository.get_profile.return_value = self.repository.profile
         await admin_command(self.message, self.state, self.repository)
-        self.assertIn("только администратору", self.message.last_answer.args[0])
+        self.assertEqual(
+            {
+                button.text
+                for row in self.message.last_answer.kwargs["reply_markup"].keyboard
+                for button in row
+            },
+            {"🗓 Расписание занятий", "📨 Обращения поддержки", "🏠 Главное меню"},
+        )
+        self.repository.profile = replace(
+            self.repository.profile, is_admin=False, role=None
+        )
+        self.repository.get_profile.return_value = self.repository.profile
+        await admin_command(self.message, self.state, self.repository)
+        self.assertIn("только сотрудникам", self.message.last_answer.args[0])
 
     async def test_admin_can_search_and_edit_participants(self):
-        self.repository.profile = replace(self.repository.profile, is_admin=True)
+        self.repository.profile = replace(
+            self.repository.profile, is_admin=True, role="admin"
+        )
         self.repository.get_profile.return_value = self.repository.profile
         with patch("flamenco_bot.handlers.admin.actions_logger") as audit_factory:
             await start_participant_search(self.message, self.state, self.repository)
@@ -500,11 +525,19 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_register_commands_scopes_admin_menu_to_admin_chats(self):
         bot = SimpleNamespace(set_my_commands=AsyncMock())
-        self.repository.list_admin_ids.return_value = [77]
+        self.repository.list_staff.return_value = [
+            SimpleNamespace(telegram_id=77, role="admin"),
+            SimpleNamespace(telegram_id=88, role="teacher"),
+        ]
 
         await register_commands(bot, self.repository, SimpleNamespace(warning=print))
 
-        default_call, admin_call = bot.set_my_commands.await_args_list
+        default_call, admin_call, teacher_call = bot.set_my_commands.await_args_list
+        self.assertEqual(teacher_call.kwargs["scope"], BotCommandScopeChat(chat_id=88))
+        teacher_commands = {c.command for c in teacher_call.args[0]}
+        self.assertIn("slots", teacher_commands)
+        self.assertNotIn("client", teacher_commands)
+        self.assertNotIn("ledger", teacher_commands)
         self.assertEqual(
             {c.command for c in default_call.args[0]},
             {c.command for c in get_client_commands()},

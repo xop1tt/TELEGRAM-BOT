@@ -17,7 +17,9 @@ class BotStatusTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.message = FakeMessage(telegram_id=1001)
         self.repository = FakeRepository()
-        self.repository.profile = replace(self.repository.profile, is_admin=True)
+        self.repository.profile = replace(
+            self.repository.profile, is_admin=True, role="admin"
+        )
         self.repository.get_profile.return_value = self.repository.profile
         self.controller = SimpleNamespace(started_at=time.monotonic() - 61)
 
@@ -54,7 +56,7 @@ class BotStatusTests(unittest.IsolatedAsyncioTestCase):
     def test_admin_main_menu_has_admin_menu_and_status(self):
         labels = {
             button.text
-            for row in main_menu_keyboard(is_admin=True).keyboard
+            for row in main_menu_keyboard(role="admin").keyboard
             for button in row
         }
         self.assertIn(ADMIN_MENU, labels)

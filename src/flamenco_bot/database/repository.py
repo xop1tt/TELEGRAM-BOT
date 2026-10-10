@@ -22,7 +22,7 @@ logger = logging.getLogger("bot.database")
 # Схему создают и меняют миграции репозитория базы данных (DATABASE,
 # migrate.py); бот и API только проверяют при старте, что она не старее
 # нужной этому коду. Повышайте вместе с кодом, которому нужна новая миграция.
-REQUIRED_SCHEMA_VERSION = "015"
+REQUIRED_SCHEMA_VERSION = "016"
 CLASS_KEYS = {"beginner", "intermediate", "individual"}
 MAX_SUPPORT_MESSAGE_LENGTH = 2000
 # Бизнес-правила бронирования слотов, подтверждённые владельцем продукта
@@ -123,17 +123,36 @@ class UserProfile:
     registered_at: datetime
     is_admin: bool
     lesson_credits: int = 0
+    # Роль сотрудника (staff_members): 'admin', 'teacher' или None.
+    role: Optional[str] = None
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any]) -> "UserProfile":
+        role = record.get("staff_role")
         return cls(
             telegram_id=record["telegram_id"],
             phone=record["phone"],
             user_name=record["user_name"],
             registered_at=record["registered_at"],
-            is_admin=record["is_admin"],
+            is_admin=role == STAFF_ADMIN,
             lesson_credits=record.get("lesson_credits", 0),
+            role=role,
         )
+
+
+# Права — только в staff_members (миграция 016): bot_users.is_admin и
+# users.is_admin больше не читаются.
+STAFF_ADMIN = "admin"
+STAFF_TEACHER = "teacher"
+STAFF_ROLES = (STAFF_ADMIN, STAFF_TEACHER)
+
+_PROFILE_SELECT = """
+    SELECT profile.telegram_id, profile.phone, profile.user_name,
+           profile.registered_at, profile.lesson_credits,
+           staff.role AS staff_role
+    FROM bot_users AS profile
+    LEFT JOIN staff_members AS staff ON staff.telegram_id = profile.telegram_id
+"""
 
 
 @dataclass(frozen=True)
@@ -148,6 +167,9 @@ class ClassSlot:
     cancelled_at: Optional[datetime] = None
     cancel_reason: Optional[str] = None
     rescheduled_at: Optional[datetime] = None
+    # Преподаватель (staff_members) и его имя для расписания.
+    teacher_telegram_id: Optional[int] = None
+    teacher_name: Optional[str] = None
 
     @property
     def remaining(self) -> int:
@@ -165,7 +187,27 @@ class ClassSlot:
             cancelled_at=record.get("cancelled_at"),
             cancel_reason=record.get("cancel_reason"),
             rescheduled_at=record.get("rescheduled_at"),
+            teacher_telegram_id=record.get("teacher_telegram_id"),
+            teacher_name=record.get("teacher_name"),
         )
+
+
+# Слот со счётчиком подтверждённых записей и преподавателем — общий SELECT
+# для всех чтений слотов (бот, сайт, админка).
+SLOT_SELECT = """
+    SELECT slot.id, slot.class_key, slot.starts_at, slot.capacity, slot.status,
+           slot.cancelled_at, slot.cancel_reason, slot.rescheduled_at,
+           slot.teacher_telegram_id,
+           COALESCE(teacher_staff.display_name, teacher.user_name) AS teacher_name,
+           (
+               SELECT COUNT(*) FROM lesson_bookings AS booking
+               WHERE booking.slot_id = slot.id AND booking.status = 'confirmed'
+           )::INTEGER AS booked_count
+    FROM lesson_slots AS slot
+    LEFT JOIN staff_members AS teacher_staff
+        ON teacher_staff.telegram_id = slot.teacher_telegram_id
+    LEFT JOIN bot_users AS teacher ON teacher.telegram_id = slot.teacher_telegram_id
+"""
 
 
 @dataclass(frozen=True)
@@ -459,12 +501,14 @@ class WebUserRecord:
     telegram_id: Optional[int]
     display_name: str
     created_at: datetime
-    # Право администратора на сайте: users.is_admin или bot_users.is_admin
-    # привязанного Telegram (миграция 015).
+    # Права на сайте — роль привязанного Telegram в staff_members
+    # (миграция 016); без привязанного Telegram прав нет.
     is_admin: bool = False
+    role: Optional[str] = None
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any]) -> "WebUserRecord":
+        role = record.get("staff_role")
         return cls(
             id=record["id"],
             email=record["email"],
@@ -472,7 +516,8 @@ class WebUserRecord:
             telegram_id=record["telegram_id"],
             display_name=record["display_name"],
             created_at=record["created_at"],
-            is_admin=bool(record["is_admin"]),
+            is_admin=role == STAFF_ADMIN,
+            role=role,
         )
 
 
@@ -483,9 +528,10 @@ _WEB_USER_SELECT = """
     SELECT account.id, account.email, account.password_hash, account.telegram_id,
            COALESCE(profile.user_name, account.display_name) AS display_name,
            account.created_at,
-           account.is_admin OR COALESCE(profile.is_admin, FALSE) AS is_admin
+           staff.role AS staff_role
     FROM users AS account
     LEFT JOIN bot_users AS profile ON profile.telegram_id = account.telegram_id
+    LEFT JOIN staff_members AS staff ON staff.telegram_id = account.telegram_id
 """
 
 
@@ -500,11 +546,23 @@ class TelegramAlreadyLinkedError(ValueError):
 # Методы жизненного цикла занятий, абонементов, истории, уведомлений и входа
 # через бота вынесены в отдельные модули только из-за размера файла. Импорт
 # стоит здесь, а не в начале: модулю нужны типы, объявленные выше.
+async def is_staff_admin(connection: Any, telegram_id: int) -> bool:
+    """Право администратора внутри транзакции операции (staff_members)."""
+    return bool(
+        await connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM staff_members "
+            "WHERE telegram_id = $1 AND role = 'admin')",
+            telegram_id,
+        )
+    )
+
+
 from .studio_postgres import PostgresStudioMixin  # noqa: E402
 from .admin_queries import PostgresAdminMixin  # noqa: E402
+from .staff_postgres import PostgresStaffMixin  # noqa: E402
 
 
-class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
+class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin, PostgresStaffMixin):
     def __init__(self, pool: Any) -> None:
         self._pool = pool
 
@@ -1264,11 +1322,7 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
         reference_key = "admin-adjustment:{}".format(idempotence_key)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
-                is_admin = await connection.fetchval(
-                    "SELECT is_admin FROM bot_users WHERE telegram_id = $1",
-                    actor_telegram_id,
-                )
-                if not is_admin:
+                if not await is_staff_admin(connection, actor_telegram_id):
                     raise PermissionError("Корректировку может выполнить только админ")
                 changed = await self._change_credits(
                     connection,
@@ -1439,10 +1493,13 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
             try:
                 record = await connection.fetchrow(
                     """
-                    INSERT INTO users (email, password_hash, display_name)
-                    VALUES ($1, $2, $3)
-                    RETURNING id, email, password_hash, telegram_id, display_name,
-                              created_at, is_admin
+                    WITH created AS (
+                        INSERT INTO users (email, password_hash, display_name)
+                        VALUES ($1, $2, $3)
+                        RETURNING id, email, password_hash, telegram_id,
+                                  display_name, created_at
+                    )
+                    SELECT created.*, NULL::TEXT AS staff_role FROM created
                     """,
                     email,
                     password_hash,
@@ -1461,26 +1518,18 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
         display_name: str,
     ) -> WebUserRecord:
         async with self._pool.acquire() as connection:
-            record = await connection.fetchrow(
+            await connection.execute(
                 """
                 INSERT INTO users (telegram_id, display_name)
                 VALUES ($1, $2)
                 ON CONFLICT (telegram_id) DO NOTHING
-                RETURNING id, email, password_hash, telegram_id, display_name,
-                          created_at, is_admin
                 """,
                 telegram_id,
                 display_name,
             )
-            if record is None:
-                record = await connection.fetchrow(
-                    """
-                    SELECT id, email, password_hash, telegram_id, display_name,
-                           created_at, is_admin
-                    FROM users WHERE telegram_id = $1
-                    """,
-                    telegram_id,
-                )
+            record = await connection.fetchrow(
+                _WEB_USER_SELECT + "WHERE account.telegram_id = $1", telegram_id
+            )
         return WebUserRecord.from_record(record)
 
     async def get_web_user_by_id(self, user_id: int) -> Optional[WebUserRecord]:
@@ -1618,16 +1667,6 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
             )
         return result == "UPDATE 1"
 
-    async def set_web_user_admin(self, user_id: int, is_admin: bool) -> bool:
-        async with self._pool.acquire() as connection:
-            result = await connection.execute(
-                "UPDATE users SET is_admin = $2, updated_at = NOW() WHERE id = $1",
-                user_id,
-                is_admin,
-            )
-        logger.info("Set web user admin user_id=%s is_admin=%s", user_id, is_admin)
-        return result == "UPDATE 1"
-
     async def close(self) -> None:
         await self._pool.close()
         logger.info("PostgreSQL connection pool closed")
@@ -1636,22 +1675,23 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
         self,
         telegram_id: int,
         user_name: str,
-        is_admin: bool,
     ) -> UserProfile:
+        """Профиль по Telegram ID; новый создаётся с этим именем.
+
+        Права не выдаются здесь никогда — только через staff_members.
+        """
         async with self._pool.acquire() as connection:
-            record = await connection.fetchrow(
+            await connection.execute(
                 """
-                INSERT INTO bot_users (telegram_id, user_name, is_admin)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (telegram_id) DO UPDATE
-                    SET is_admin = bot_users.is_admin,
-                        last_seen_at = NOW()
-                RETURNING telegram_id, phone, user_name, registered_at, is_admin,
-                          lesson_credits
+                INSERT INTO bot_users (telegram_id, user_name)
+                VALUES ($1, $2)
+                ON CONFLICT (telegram_id) DO UPDATE SET last_seen_at = NOW()
                 """,
                 telegram_id,
                 user_name,
-                is_admin,
+            )
+            record = await connection.fetchrow(
+                _PROFILE_SELECT + "WHERE profile.telegram_id = $1", telegram_id
             )
         logger.info("Loaded profile telegram_id=%s", telegram_id)
         return UserProfile.from_record(record)
@@ -1689,14 +1729,12 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
 
         async with self._pool.acquire() as connection:
             records = await connection.fetch(
-                """
-                SELECT telegram_id, phone, user_name, registered_at, is_admin,
-                       lesson_credits
-                FROM bot_users
-                WHERE telegram_id::TEXT = $1
-                   OR user_name ILIKE $2
-                   OR phone ILIKE $2
-                ORDER BY registered_at DESC
+                _PROFILE_SELECT
+                + """
+                WHERE profile.telegram_id::TEXT = $1
+                   OR profile.user_name ILIKE $2
+                   OR profile.phone ILIKE $2
+                ORDER BY profile.registered_at DESC
                 LIMIT $3
                 """,
                 normalized_query,
@@ -1713,13 +1751,7 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
     async def get_profile(self, telegram_id: int) -> Optional[UserProfile]:
         async with self._pool.acquire() as connection:
             record = await connection.fetchrow(
-                """
-                SELECT telegram_id, phone, user_name, registered_at, is_admin,
-                       lesson_credits
-                FROM bot_users
-                WHERE telegram_id = $1
-                """,
-                telegram_id,
+                _PROFILE_SELECT + "WHERE profile.telegram_id = $1", telegram_id
             )
         return UserProfile.from_record(record) if record is not None else None
 
@@ -1729,23 +1761,36 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
         starts_at: datetime,
         capacity: int,
         admin_telegram_id: int,
+        teacher_telegram_id: Optional[int] = None,
     ) -> ClassSlot:
+        """Новый слот; ``teacher_telegram_id`` — сотрудник из staff_members
+        (``LookupError``, если такого сотрудника нет)."""
         _validate_slot(class_key, starts_at, capacity)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
-                record = await connection.fetchrow(
+                if teacher_telegram_id is not None and not await connection.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM staff_members "
+                    "WHERE telegram_id = $1)",
+                    teacher_telegram_id,
+                ):
+                    raise LookupError("Преподаватель не найден среди сотрудников")
+                created = await connection.fetchval(
                     """
                     INSERT INTO lesson_slots (
-                        class_key, starts_at, capacity, created_by
+                        class_key, starts_at, capacity, created_by,
+                        teacher_telegram_id
                     )
-                    VALUES ($1, $2, $3, $4)
-                    RETURNING id, class_key, starts_at, capacity,
-                              0 AS booked_count, status
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id
                     """,
                     class_key,
                     starts_at,
                     capacity,
                     admin_telegram_id,
+                    teacher_telegram_id,
+                )
+                record = await connection.fetchrow(
+                    SLOT_SELECT + "WHERE slot.id = $1", created
                 )
                 await connection.execute(
                     """
@@ -1769,12 +1814,14 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
         limit: int = 100,
         include_cancelled: bool = False,
         starts_after: Optional[datetime] = None,
+        teacher_telegram_id: Optional[int] = None,
     ) -> Sequence[ClassSlot]:
         """Слоты, начинающиеся после ``starts_after`` (по умолчанию — сейчас).
 
         Отменённые студией слоты по умолчанию не показываются: публичному
         расписанию и списку записи они не нужны; админ-расписание передаёт
-        ``include_cancelled=True``.
+        ``include_cancelled=True``. ``teacher_telegram_id`` — только занятия
+        этого преподавателя (расписание преподавателя).
         """
         if class_key is not None and class_key not in CLASS_KEYS:
             raise ValueError("Неизвестный формат занятия")
@@ -1782,19 +1829,12 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
             raise ValueError("Количество слотов должно быть от 1 до 100")
         async with self._pool.acquire() as connection:
             records = await connection.fetch(
-                """
-                SELECT slot.id, slot.class_key, slot.starts_at, slot.capacity,
-                       slot.status, slot.cancelled_at, slot.cancel_reason,
-                       slot.rescheduled_at,
-                       COUNT(booking.id) FILTER (
-                           WHERE booking.status = 'confirmed'
-                       )::INTEGER AS booked_count
-                FROM lesson_slots AS slot
-                LEFT JOIN lesson_bookings AS booking ON booking.slot_id = slot.id
+                SLOT_SELECT
+                + """
                 WHERE slot.starts_at > COALESCE($3::TIMESTAMPTZ, NOW())
                   AND ($1::TEXT IS NULL OR slot.class_key = $1)
                   AND ($4::BOOLEAN OR slot.status <> 'cancelled')
-                GROUP BY slot.id
+                  AND ($5::BIGINT IS NULL OR slot.teacher_telegram_id = $5)
                 ORDER BY slot.starts_at
                 LIMIT $2
                 """,
@@ -1802,6 +1842,7 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
                 limit,
                 starts_after,
                 include_cancelled,
+                teacher_telegram_id,
             )
         return [ClassSlot.from_record(record) for record in records]
 
@@ -1816,22 +1857,15 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
             raise ValueError("Количество слотов должно быть от 1 до 100")
         async with self._pool.acquire() as connection:
             records = await connection.fetch(
-                """
-                SELECT slot.id, slot.class_key, slot.starts_at, slot.capacity,
-                       slot.status,
-                       COUNT(booking.id) FILTER (
-                           WHERE booking.status = 'confirmed'
-                       )::INTEGER AS booked_count
-                FROM lesson_slots AS slot
-                LEFT JOIN lesson_bookings AS booking ON booking.slot_id = slot.id
-                WHERE slot.class_key = $1
-                  AND slot.status = 'open'
-                  AND slot.starts_at > NOW()
-                GROUP BY slot.id
-                HAVING COUNT(booking.id) FILTER (
-                    WHERE booking.status = 'confirmed'
-                ) < slot.capacity
-                ORDER BY slot.starts_at
+                "SELECT * FROM ("
+                + SLOT_SELECT
+                + """
+                    WHERE slot.class_key = $1
+                      AND slot.status = 'open'
+                      AND slot.starts_at > NOW()
+                ) AS available
+                WHERE available.booked_count < available.capacity
+                ORDER BY available.starts_at
                 LIMIT $2
                 """,
                 class_key,
@@ -2214,7 +2248,7 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
     async def list_admin_ids(self) -> Sequence[int]:
         async with self._pool.acquire() as connection:
             records = await connection.fetch(
-                "SELECT telegram_id FROM bot_users WHERE is_admin = TRUE "
+                "SELECT telegram_id FROM staff_members WHERE role = 'admin' "
                 "ORDER BY telegram_id"
             )
         return [record["telegram_id"] for record in records]

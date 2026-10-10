@@ -6,7 +6,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from ..runtime.admin_access import get_admin_id
+from ..runtime.admin_access import get_staff_role
 from ..keyboards.user import main_menu_keyboard
 from ..keyboards.user.account import open_profile
 from ..keyboards.user.main_menu import (
@@ -52,6 +52,14 @@ ADMIN_HELP = (
 )
 
 
+TEACHER_HELP = (
+    "Преподавателю — «🛠 Админ-меню»: ваши занятия (участники, перенос, "
+    "отмена, открыть/закрыть запись, вместимость) и обращения поддержки.\n"
+    "/slots — мои занятия, /slot ID — карточка занятия, "
+    "/support_tickets — обращения."
+)
+
+
 @router.message(CommandStart())
 async def start_command(
     message: Message,
@@ -66,7 +74,7 @@ async def start_command(
         "Здесь можно записаться на занятие, купить абонемент и посмотреть "
         "свои записи. Направления, цены и правила — /about.\n\n"
         "{}".format(profile.user_name, summary),
-        reply_markup=main_menu_keyboard(is_admin=profile.is_admin),
+        reply_markup=main_menu_keyboard(role=profile.role),
     )
     logger.info("Handled /start telegram_id=%s", profile.telegram_id)
 
@@ -78,10 +86,17 @@ async def help_command(
     repository: Any,
 ) -> None:
     await state.clear()
-    is_admin = await get_admin_id(message, repository) is not None
+    role = await get_staff_role(message, repository)
     await message.answer(
-        CLIENT_HELP + ("\n\n" + ADMIN_HELP if is_admin else ""),
-        reply_markup=main_menu_keyboard(is_admin=is_admin),
+        CLIENT_HELP
+        + (
+            "\n\n" + ADMIN_HELP
+            if role == "admin"
+            else "\n\n" + TEACHER_HELP
+            if role is not None
+            else ""
+        ),
+        reply_markup=main_menu_keyboard(role=role),
     )
     sender = message.from_user
     logger.info("Handled /help telegram_id=%s", sender.id if sender else None)

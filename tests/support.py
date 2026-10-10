@@ -142,6 +142,9 @@ class FakeRepository:
         self.cancel_class_slot_booking = AsyncMock(return_value=True)
         self.list_bookings_for_telegram_id = AsyncMock(return_value=[])
         self.list_admin_ids = AsyncMock(return_value=[])
+        self.list_staff = AsyncMock(return_value=[])
+        self.get_staff_role = AsyncMock(return_value=None)
+        self.is_slot_teacher = AsyncMock(return_value=False)
         self.create_support_message = AsyncMock(return_value=(1, True))
         self.reply_support_ticket = AsyncMock(return_value=1001)
         self.list_open_support_tickets = AsyncMock(return_value=[])
@@ -221,14 +224,14 @@ def make_record(
     telegram_id=1001,
     phone=None,
     user_name="Анна",
-    is_admin=False,
+    staff_role=None,
 ):
     return {
         "telegram_id": telegram_id,
         "phone": phone,
         "user_name": user_name,
         "registered_at": datetime(2025, 1, 2, tzinfo=timezone.utc),
-        "is_admin": is_admin,
+        "staff_role": staff_role,
         "lesson_credits": 0,
         "id": 7,
         "kind": "booking",
@@ -252,15 +255,10 @@ class FakeConnection:
         self.calls.append((query, args))
         if "COUNT(*) FILTER (WHERE last_seen_at >= $1)" in query:
             return {"total_users": 1, "online_users": 1}
-        is_profile_insert = "INSERT INTO bot_users" in query
-        if is_profile_insert:
-            is_admin = self.profile_admin_status.setdefault(args[0], args[2])
-        else:
-            is_admin = False
+        # Роль — из staff_members (profile_admin_status: Telegram ID → админ).
         return make_record(
             telegram_id=args[0],
-            user_name=args[1] if is_profile_insert else "Анна",
-            is_admin=is_admin,
+            staff_role="admin" if self.profile_admin_status.get(args[0]) else None,
         )
 
     async def fetch(self, query, *args):

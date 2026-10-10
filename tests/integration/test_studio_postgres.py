@@ -51,9 +51,11 @@ class StudioPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.repo = PostgresRepository(self.pool)
         await apply_migrations(self.pool)
         await self.repo.initialize()
-        await self.repo.get_or_create_profile(ADMIN_ID, "Админ", True)
+        await self.repo.get_or_create_profile(ADMIN_ID, "Админ")
         await self._sql(
-            "UPDATE bot_users SET is_admin = TRUE WHERE telegram_id = $1", ADMIN_ID
+            "INSERT INTO staff_members (telegram_id, role) VALUES ($1, 'admin') "
+            "ON CONFLICT (telegram_id) DO UPDATE SET role = 'admin'",
+            ADMIN_ID,
         )
 
     async def asyncTearDown(self):
@@ -79,7 +81,7 @@ class StudioPostgresTests(unittest.IsolatedAsyncioTestCase):
             return await connection.fetchval(query, *args)
 
     async def _user(self, telegram_id, credits=0):
-        await self.repo.get_or_create_profile(telegram_id, "Участник", False)
+        await self.repo.get_or_create_profile(telegram_id, "Участник")
         if credits:
             await self.repo.adjust_lesson_credits(
                 telegram_id, credits, "стартовый баланс", ADMIN_ID, uuid.uuid4()

@@ -47,7 +47,7 @@ class ApiCabinetTests(PostgresApiTestCase):
         app.state.auth_limiter = AuthRateLimiter(max_attempts=100)
         app.state.payment_gateway = YooKassaClient("", "", "")
         self.client = self.make_client(app)
-        self.call(self.repository.get_or_create_profile(ADMIN_ID, "Админ", False))
+        self.call(self.repository.get_or_create_profile(ADMIN_ID, "Админ"))
         self.run_async(make_admin(self.repository, ADMIN_ID))
 
     def call(self, coroutine):
@@ -203,7 +203,7 @@ class ApiCabinetTests(PostgresApiTestCase):
         self.assertEqual(all_read.json()["updated"], len(feed["items"]) - 1)
 
     def test_cannot_mark_other_users_notifications(self):
-        self.call(self.repository.get_or_create_profile(2002, "Мария", False))
+        self.call(self.repository.get_or_create_profile(2002, "Мария"))
         self.call(self.repository.enqueue_notification(2002, "low_balance", {}, "x"))
         other_id = self.call(self.repository.list_notifications(2002))[0].id
         self.login()

@@ -62,7 +62,6 @@ class SupportService:
         await self.repository.get_or_create_profile(
             telegram_id=telegram_id,
             user_name=user_name,
-            is_admin=False,
         )
         ticket_id, created = await self.repository.create_support_message(
             telegram_id, body

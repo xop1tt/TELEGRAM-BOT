@@ -150,10 +150,11 @@ async def make_admin(
     repository: PostgresRepository, telegram_id: int, name: str = "Админ"
 ) -> None:
     """Профиль бота с правами администратора студии."""
-    await repository.get_or_create_profile(telegram_id, name, True)
+    await repository.get_or_create_profile(telegram_id, name)
     await sql(
         repository,
-        "UPDATE bot_users SET is_admin = TRUE WHERE telegram_id = $1",
+        "INSERT INTO staff_members (telegram_id, role) VALUES ($1, 'admin') "
+        "ON CONFLICT (telegram_id) DO UPDATE SET role = 'admin'",
         telegram_id,
     )
 

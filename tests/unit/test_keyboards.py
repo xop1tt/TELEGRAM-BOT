@@ -41,7 +41,7 @@ class KeyboardTests(unittest.TestCase):
         )
 
     def test_admin_menu_button_is_only_in_admin_main_menu(self):
-        admin_labels = labels(main_menu_keyboard(is_admin=True))
+        admin_labels = labels(main_menu_keyboard(role="admin"))
         regular_labels = labels(main_menu_keyboard())
         self.assertIn("🛠 Админ-меню", admin_labels)
         self.assertIn("📊 Состояние бота", admin_labels)
@@ -65,7 +65,7 @@ class KeyboardTests(unittest.TestCase):
         self.assertTrue(contact_button.request_contact)
 
     def test_legacy_labels_do_not_collide_with_current_menu(self):
-        current = labels(main_menu_keyboard(is_admin=True)) | labels(profile_keyboard())
+        current = labels(main_menu_keyboard(role="admin")) | labels(profile_keyboard())
         self.assertFalse(current & set(LEGACY_TO_SECTION))
 
     def test_keyboard_handlers_precede_wildcard_fsm_handlers(self):
