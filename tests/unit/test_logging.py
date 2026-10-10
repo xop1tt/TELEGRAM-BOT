@@ -12,14 +12,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-from aiogram import Bot
-from aiogram.methods import Response, SendMessage, TelegramMethod
 from aiogram.types import Chat, Message, TelegramObject, Update, User
 
-from flamenco_bot.runtime.answers_logging import (
-    AnswersLogMiddleware,
-    create_answers_logger,
-)
 from flamenco_bot.runtime.bot_logging import (
     UpdateLoggingMiddleware,
     UpdateMetrics,
@@ -61,54 +55,6 @@ class LoggingTests(unittest.IsolatedAsyncioTestCase):
                 )
             finally:
                 handler.close()
-
-    async def test_answer_logger_does_not_write_message_content_or_destination(self):
-        with tempfile.TemporaryDirectory() as directory:
-            log_path = Path(directory) / "answers_log"
-            logger = logging.Logger("test.answers")
-            handler = logging.FileHandler(log_path, encoding="utf-8")
-            handler.setFormatter(logging.Formatter("%(message)s"))
-            logger.addHandler(handler)
-            middleware = AnswersLogMiddleware(logger)
-
-            async def successful_request(
-                bot: Bot,
-                method: TelegramMethod[Any],
-            ) -> Response[Any]:
-                _ = (bot, method)
-                return Response[Any](ok=True, result=True)
-
-            bot = Bot(token="123456:" + "x" * 35)
-            result = await middleware(
-                successful_request,
-                bot,
-                SendMessage(
-                    chat_id=1001,
-                    text="Ваш номер +7 999 123-45-67",
-                ),
-            )
-            await middleware(
-                successful_request,
-                bot,
-                SendMessage(
-                    chat_id=1001,
-                    text=(
-                        "Одноразовый код для подтверждения действия "
-                        "в этом Telegram-чате: 123456."
-                    ),
-                ),
-            )
-            handler.flush()
-            contents = log_path.read_text(encoding="utf-8")
-            self.assertTrue(result.ok)
-            self.assertNotIn("+7 999 123-45-67", contents)
-            self.assertNotIn("8373364453", contents)
-            self.assertNotIn("123-45-67", contents)
-            self.assertNotIn("123456", contents)
-            self.assertIn("method=sendMessage", contents)
-            self.assertIn("payload_chars=", contents)
-            handler.close()
-            await bot.session.close()
 
     async def test_update_logger_records_success_and_propagates_errors(self):
         logger = logging.Logger("test.updates")
@@ -299,7 +245,7 @@ class LoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("Health check failed" in message for message in records))
         self.assertTrue(any("error_type=OSError" in message for message in records))
 
-    async def test_logging_config_creates_both_log_files(self):
+    async def test_logging_config_creates_bot_log_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = logging.getLogger()
             old_handlers = root.handlers[:]
@@ -309,9 +255,7 @@ class LoggingTests(unittest.IsolatedAsyncioTestCase):
                 with redirect_stderr(terminal):
                     logger = configure_logging(Path(directory))
                     logger.info("Important runtime status")
-                create_answers_logger(Path(directory))
                 self.assertTrue((Path(directory) / "bot.log").exists())
-                self.assertTrue((Path(directory) / "answers_log").exists())
                 self.assertIn("Important runtime status", terminal.getvalue())
             finally:
                 for handler in root.handlers:

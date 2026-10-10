@@ -3,7 +3,7 @@ import logging
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, call, patch
 
@@ -139,48 +139,6 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             next_local_midnight(now),
             datetime(2026, 10, 2, 0, 0, tzinfo=timezone.utc),
         )
-
-    async def test_admin_scheduled_restart_can_be_cancelled(self):
-        controller = self.make_controller(".")
-        scheduled_at = datetime.now().astimezone() + timedelta(hours=1)
-
-        result = await controller.schedule_restart(scheduled_at)
-
-        self.assertEqual(result, scheduled_at)
-        self.assertEqual(controller.scheduled_restart_at, scheduled_at)
-        self.assertTrue(await controller.cancel_scheduled_restart())
-        self.assertIsNone(controller.scheduled_restart_at)
-        self.assertIsNone(controller.scheduled_restart_task)
-        self.assertFalse(controller.restart_event.is_set())
-
-    async def test_scheduled_restart_persists_and_restores_without_clearing_on_close(
-        self,
-    ):
-        store = Mock()
-        store.set_scheduled_restart = AsyncMock()
-        store.clear_scheduled_restart = AsyncMock()
-        scheduled_at = datetime.now().astimezone() + timedelta(hours=1)
-        controller = self.make_controller(".", restart_store=store)
-
-        await controller.schedule_restart(scheduled_at)
-        store.set_scheduled_restart.assert_awaited_once_with(scheduled_at)
-        store.clear_scheduled_restart.reset_mock()
-        await controller.close()
-        store.clear_scheduled_restart.assert_not_awaited()
-
-        store.get_scheduled_restart = AsyncMock(return_value=scheduled_at)
-        restarted = self.make_controller(".", restart_store=store)
-        restored = await restarted.restore_scheduled_restart()
-        self.assertEqual(restored, scheduled_at)
-        self.assertEqual(restarted.scheduled_restart_at, scheduled_at)
-        await restarted.close()
-
-    async def test_admin_scheduled_restart_rejects_past_time(self):
-        controller = self.make_controller(".")
-        with self.assertRaisesRegex(ValueError, "будущем"):
-            await controller.schedule_restart(
-                datetime.now().astimezone() - timedelta(minutes=1)
-            )
 
     def test_process_restart_replaces_current_python_process(self):
         with patch("flamenco_bot.runtime.bot_lifecycle.os.execv") as execv:

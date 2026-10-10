@@ -52,10 +52,9 @@ from ..keyboards.admin import (
     ADMIN_CLIENTS,
     ADMIN_FINANCE,
     ADMIN_SCHEDULE,
-    CLASS_SLOTS,
     SUPPORT_TICKETS,
     admin_action_keyboard,
-    bot_schedule_input_keyboard,
+    admin_input_keyboard,
 )
 from ..keyboards.user.screens import button, markup, parse_int, show
 from ..payments import PURCHASE_PACKAGES
@@ -86,7 +85,8 @@ from .admin import (
     prepare_credit_adjustment,
 )
 from .states import AdminForm
-from .support import close_ticket_and_notify, deliver_support_reply
+from ..services.support import close_ticket_and_notify
+from .support import deliver_support_reply
 
 
 logger = logging.getLogger("bot.handlers.admin_panel")
@@ -284,7 +284,7 @@ async def _show_slot(callback: CallbackQuery, repository: Any, slot_id: int, not
     await show(callback, *screen)
 
 
-@router.message(F.text.in_({ADMIN_SCHEDULE, CLASS_SLOTS}))
+@router.message(F.text == ADMIN_SCHEDULE)
 @router.message(Command("slots"))
 async def open_schedule(message: Message, state: FSMContext, repository: Any) -> None:
     if await get_admin_id(message, repository) is None:
@@ -390,7 +390,7 @@ async def start_new_slot(
     await callback.message.answer(
         "«{}». Введите дату и время по времени студии, например 14.10 19:00 "
         "или 14.10.2026 19:00.".format(CLASS_LABELS[class_key]),
-        reply_markup=bot_schedule_input_keyboard(),
+        reply_markup=admin_input_keyboard(),
     )
 
 
@@ -508,7 +508,7 @@ async def start_reschedule(
         "уведомление.".format(
             CLASS_LABELS[slot.class_key], format_studio_datetime(slot.starts_at)
         ),
-        reply_markup=bot_schedule_input_keyboard(),
+        reply_markup=admin_input_keyboard(),
     )
 
 
@@ -655,7 +655,7 @@ async def ask_cancel_reason(
     await callback.answer()
     await callback.message.answer(
         "Причина отмены (до 300 символов) — её увидят участники в уведомлении.",
-        reply_markup=bot_schedule_input_keyboard(),
+        reply_markup=admin_input_keyboard(),
     )
 
 
@@ -762,7 +762,7 @@ async def start_capacity_change(
     await callback.answer()
     await callback.message.answer(
         "Новая вместимость (1–100, не меньше числа записанных):",
-        reply_markup=bot_schedule_input_keyboard(),
+        reply_markup=admin_input_keyboard(),
     )
 
 
@@ -1170,7 +1170,7 @@ async def ask_grant_reason(
     await callback.message.answer(
         "«{}» участнику {}. Причина выдачи (например «оплата наличными») — "
         "её увидит участник в истории операций.".format(package.title, tid),
-        reply_markup=bot_schedule_input_keyboard(),
+        reply_markup=admin_input_keyboard(),
     )
 
 
@@ -1276,7 +1276,7 @@ async def ask_revoke_reason(
         "этого абонемента. Причина (её увидит участник):".format(
             grant.title, grant.telegram_id
         ),
-        reply_markup=bot_schedule_input_keyboard(),
+        reply_markup=admin_input_keyboard(),
     )
 
 
@@ -1375,7 +1375,7 @@ async def start_client_adjustment(
     await callback.message.answer(
         "Введите изменение и причину, например «+2 оплата наличными» или "
         "«-1 ошибочное начисление». Причину увидит участник.",
-        reply_markup=bot_schedule_input_keyboard(),
+        reply_markup=admin_input_keyboard(),
     )
 
 
@@ -1485,6 +1485,7 @@ async def ticket_screen(
 
 
 @router.message(F.text == SUPPORT_TICKETS)
+@router.message(Command("support_tickets"))
 async def open_tickets(message: Message, state: FSMContext, repository: Any) -> None:
     if await get_admin_id(message, repository) is None:
         await message.answer("Команда доступна только администратору студии.")
@@ -1525,7 +1526,7 @@ async def start_ticket_reply(
     await callback.answer()
     await callback.message.answer(
         "Текст ответа по обращению №{} (до 2000 символов):".format(_tid(callback)),
-        reply_markup=bot_schedule_input_keyboard(),
+        reply_markup=admin_input_keyboard(),
     )
 
 
@@ -1598,8 +1599,8 @@ async def reopen_ticket(callback: CallbackQuery, repository: Any) -> None:
 
 def finance_screen() -> tuple[str, InlineKeyboardMarkup]:
     return (
-        "💰 Финансы\n\nКорректировка баланса — в карточке участника («± Баланс») "
-        "или /credits_adjust. Возврат оплаты — /refund ID причина.",
+        "💰 Финансы\n\nКорректировка баланса — в карточке участника "
+        "(«± Баланс»). Возврат оплаты — /refund ID причина.",
         markup(
             [button("🧾 Последние операции", "a:fl")],
             [button("🕵️ Журнал действий", "a:fa")],

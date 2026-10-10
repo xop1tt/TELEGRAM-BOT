@@ -137,27 +137,6 @@ class UserProfile:
 
 
 @dataclass(frozen=True)
-class LessonRequest:
-    id: int
-    telegram_id: int
-    kind: str
-    details: str
-    status: str
-    created_at: datetime
-
-    @classmethod
-    def from_record(cls, record: Mapping[str, Any]) -> "LessonRequest":
-        return cls(
-            id=record["id"],
-            telegram_id=record["telegram_id"],
-            kind=record["kind"],
-            details=record["details"],
-            status=record["status"],
-            created_at=record["created_at"],
-        )
-
-
-@dataclass(frozen=True)
 class ClassSlot:
     id: int
     class_key: str
@@ -681,38 +660,6 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
                         # в пул — закрываем, и PostgreSQL снимет её сам.
                         logger.exception("Failed to release advisory lock")
                         connection.terminate()
-
-    async def get_scheduled_restart(self) -> Optional[datetime]:
-        async with self._pool.acquire() as connection:
-            value = await connection.fetchval(
-                "SELECT setting_value FROM bot_runtime_settings "
-                "WHERE setting_key = 'scheduled_restart_at'"
-            )
-        return datetime.fromisoformat(value) if value is not None else None
-
-    async def set_scheduled_restart(self, scheduled_at: datetime) -> None:
-        if scheduled_at.tzinfo is None:
-            raise ValueError("Время рестарта должно содержать часовой пояс")
-        async with self._pool.acquire() as connection:
-            await connection.execute(
-                """
-                INSERT INTO bot_runtime_settings (setting_key, setting_value)
-                VALUES ('scheduled_restart_at', $1)
-                ON CONFLICT (setting_key)
-                DO UPDATE SET setting_value = EXCLUDED.setting_value,
-                              updated_at = NOW()
-                """,
-                scheduled_at.isoformat(),
-            )
-        logger.info("Persisted scheduled restart at=%s", scheduled_at.isoformat())
-
-    async def clear_scheduled_restart(self) -> None:
-        async with self._pool.acquire() as connection:
-            await connection.execute(
-                "DELETE FROM bot_runtime_settings "
-                "WHERE setting_key = 'scheduled_restart_at'"
-            )
-        logger.info("Cleared persisted scheduled restart")
 
     async def record_activity(self, telegram_id: int) -> None:
         async with self._pool.acquire() as connection:
@@ -2468,138 +2415,6 @@ class PostgresRepository(PostgresStudioMixin, PostgresAdminMixin):
                     admin_telegram_id,
                 )
         return ticket["telegram_id"]
-
-    async def create_lesson_request(
-        self,
-        telegram_id: int,
-        kind: str,
-        details: str,
-    ) -> LessonRequest:
-        if kind not in {"booking", "purchase"}:
-            raise ValueError("Неизвестный тип заявки")
-
-        async with self._pool.acquire() as connection:
-            record = await connection.fetchrow(
-                """
-                INSERT INTO lesson_requests (telegram_id, kind, details)
-                VALUES ($1, $2, $3)
-                RETURNING id, telegram_id, kind, details, status, created_at
-                """,
-                telegram_id,
-                kind,
-                details,
-            )
-        logger.info(
-            "Created lesson request id=%s telegram_id=%s kind=%s",
-            record["id"],
-            telegram_id,
-            kind,
-        )
-        return LessonRequest.from_record(record)
-
-    async def list_pending_requests(self, limit: int = 20) -> Sequence[LessonRequest]:
-        if not 1 <= limit <= 100:
-            raise ValueError("Количество заявок должно быть от 1 до 100")
-
-        async with self._pool.acquire() as connection:
-            records = await connection.fetch(
-                """
-                SELECT id, telegram_id, kind, details, status, created_at
-                FROM lesson_requests
-                WHERE status = 'pending'
-                ORDER BY created_at DESC
-                LIMIT $1
-                """,
-                limit,
-            )
-        logger.info("Loaded %s pending requests", len(records))
-        return [LessonRequest.from_record(record) for record in records]
-
-    async def complete_request(self, request_id: int) -> bool:
-        async with self._pool.acquire() as connection:
-            async with connection.transaction():
-                request = await connection.fetchrow(
-                    """
-                    SELECT telegram_id, kind
-                    FROM lesson_requests
-                    WHERE id = $1 AND status = 'pending'
-                    FOR UPDATE
-                    """,
-                    request_id,
-                )
-                if request is None:
-                    return False
-                await connection.execute(
-                    "UPDATE lesson_requests SET status = 'completed' WHERE id = $1",
-                    request_id,
-                )
-                if request["kind"] == "booking":
-                    current_credits = await connection.fetchval(
-                        """
-                        SELECT lesson_credits FROM bot_users
-                        WHERE telegram_id = $1
-                        FOR NO KEY UPDATE
-                        """,
-                        request["telegram_id"],
-                    )
-                    # Без занятий на балансе заявка просто закрывается.
-                    if current_credits:
-                        allocated_credits = await connection.fetchval(
-                            """
-                            SELECT COALESCE(SUM(remaining), 0)
-                            FROM (
-                                SELECT SUM(ledger.delta) AS remaining
-                                FROM lesson_payments AS payment
-                                JOIN lesson_credit_ledger AS ledger
-                                  ON ledger.payment_id = payment.id
-                                WHERE payment.telegram_id = $1
-                                  AND payment.status = 'succeeded'
-                                GROUP BY payment.id
-                                HAVING SUM(ledger.delta) > 0
-                            ) AS allocated
-                            """,
-                            request["telegram_id"],
-                        )
-                        payment_credit = None
-                        if current_credits <= allocated_credits:
-                            payment_credit = await connection.fetchrow(
-                                """
-                                SELECT payment.id
-                                FROM lesson_payments AS payment
-                                JOIN lesson_credit_ledger AS ledger
-                                  ON ledger.payment_id = payment.id
-                                WHERE payment.telegram_id = $1
-                                  AND payment.status = 'succeeded'
-                                GROUP BY payment.id
-                                HAVING SUM(ledger.delta) > 0
-                                ORDER BY payment.id
-                                LIMIT 1
-                                """,
-                                request["telegram_id"],
-                            )
-                        debit = await self._change_credits(
-                            connection,
-                            request["telegram_id"],
-                            -1,
-                            "lesson_use",
-                            "request:{}".format(request_id),
-                            payment_id=(
-                                payment_credit["id"]
-                                if payment_credit is not None
-                                else None
-                            ),
-                        )
-                        if debit is not None:
-                            logger.info(
-                                "Debited lesson credit request_id=%s "
-                                "telegram_id=%s remaining=%s",
-                                request_id,
-                                request["telegram_id"],
-                                debit[1],
-                            )
-        completed = True
-        logger.info("Completed request id=%s success=%s", request_id, completed)
-        return completed
 
     @staticmethod
     def _require_updated(result: str, telegram_id: int) -> None:

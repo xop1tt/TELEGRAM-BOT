@@ -3,7 +3,6 @@ import time
 from typing import Any
 
 from aiogram import F, Router
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
@@ -22,7 +21,7 @@ from ..services import (
     SupportService,
 )
 from ..services import support as support_service
-from ..services.support import SupportReplyStatus, close_ticket_and_notify
+from ..services.support import SupportReplyStatus
 from .states import SupportForm
 
 
@@ -151,53 +150,6 @@ async def reject_non_text_support_message(message: Message) -> None:
     )
 
 
-@router.message(Command("support_tickets"))
-async def list_support_tickets(message: Message, repository: Any) -> None:
-    admin_id = await get_admin_id(message, repository)
-    if admin_id is None:
-        await message.answer("Команда доступна только администратору студии.")
-        return
-    tickets = await repository.list_open_support_tickets(limit=20)
-    if not tickets:
-        await message.answer("Открытых обращений нет.")
-        return
-    lines = ["Открытые обращения:"]
-    for ticket in tickets:
-        excerpt = ticket.last_message.replace("\n", " ")[:160]
-        lines.append(
-            "№{} | пользователь {} | {}".format(
-                ticket.id,
-                ticket.telegram_id,
-                excerpt or "сообщение ещё не загружено",
-            )
-        )
-    await message.answer("\n".join(lines))
-
-
-@router.message(Command("support_reply"))
-async def reply_to_support_ticket(message: Message, repository: Any) -> None:
-    admin_id = await get_admin_id(message, repository)
-    if admin_id is None:
-        await message.answer("Команда доступна только администратору студии.")
-        return
-    bot = message.bot
-    if bot is None:
-        raise RuntimeError("Telegram bot is unavailable while replying to support")
-    command_text = message.text or ""
-    parts = command_text.split(maxsplit=2)
-    if len(parts) != 3 or not parts[1].isdigit():
-        await message.answer("Формат: /support_reply ID текст ответа")
-        return
-    ticket_id = int(parts[1])
-    body = parts[2].strip()
-    if not body or len(body) > 2000:
-        await message.answer("Ответ должен содержать от 1 до 2000 символов.")
-        return
-    await message.answer(
-        await deliver_support_reply(bot, repository, ticket_id, admin_id, body)
-    )
-
-
 async def deliver_support_reply(
     bot: Any,
     repository: Any,
@@ -207,9 +159,9 @@ async def deliver_support_reply(
 ) -> str:
     """Сохраняет ответ администратора и отправляет его участнику.
 
-    Возвращает текст результата для администратора. Общий шаг для
-    /support_reply и кнопки «Ответить» в админ-панели; сама логика — в
-    ``services.support`` (её же использует админка сайта).
+    Возвращает текст результата для администратора (кнопка «Ответить» в
+    админ-панели); сама логика — в ``services.support`` (её же использует
+    админка сайта).
     """
     status = await support_service.deliver_support_reply(
         bot, repository, ticket_id, admin_id, body, reply_markup=reply_button_markup()
@@ -222,26 +174,6 @@ async def deliver_support_reply(
             "Проверьте, что пользователь не заблокировал бота."
         )
     return "Ответ по обращению №{} доставлен.".format(ticket_id)
-
-
-@router.message(Command("support_close"))
-async def close_support_ticket(message: Message, repository: Any) -> None:
-    admin_id = await get_admin_id(message, repository)
-    if admin_id is None:
-        await message.answer("Команда доступна только администратору студии.")
-        return
-    bot = message.bot
-    if bot is None:
-        raise RuntimeError("Telegram bot is unavailable while closing support")
-    parts = (message.text or "").split()
-    if len(parts) != 2 or not parts[1].isdigit():
-        await message.answer("Формат: /support_close ID")
-        return
-    ticket_id = int(parts[1])
-    if not await close_ticket_and_notify(bot, repository, ticket_id, admin_id):
-        await message.answer("Открытое обращение с таким номером не найдено.")
-        return
-    await message.answer("Обращение №{} закрыто.".format(ticket_id))
 
 
 __all__ = ["router"]

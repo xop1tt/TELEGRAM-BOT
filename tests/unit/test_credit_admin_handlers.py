@@ -16,7 +16,7 @@ from flamenco_bot.handlers.admin import (
     cancel_credit_adjustment,
     confirm_credit_adjustment,
     require_credit_adjustment_confirmation,
-    start_credit_adjustment,
+    prepare_credit_adjustment,
 )
 from flamenco_bot.handlers.states import AdminForm
 from flamenco_bot.keyboards.admin import (
@@ -56,8 +56,17 @@ class CreditAdjustmentHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(log_patch.stop)
 
     async def _start(self, text):
-        self.message.text = text
-        await start_credit_adjustment(self.message, self.state, self.repository)
+        """Как кнопка «± Баланс»: участник и «+N причина» уже разобраны."""
+        _, telegram_id, delta, reason = text.split(maxsplit=3)
+        self.message.text = "{} {}".format(delta, reason)
+        await prepare_credit_adjustment(
+            self.message,
+            self.state,
+            self.repository,
+            int(telegram_id),
+            int(delta),
+            reason,
+        )
 
     async def _confirm(self):
         self.message.text = CREDITS_ADJUST_CONFIRM
@@ -66,31 +75,6 @@ class CreditAdjustmentHandlerTests(unittest.IsolatedAsyncioTestCase):
     @property
     def reply(self):
         return self.message.last_answer.args[0]
-
-    async def test_non_admin_is_denied_and_nothing_is_prepared(self):
-        self.message.from_user.id = TARGET_ID
-        await self._start("/credits_adjust 2002 +1 причина")
-
-        self.assertIn("только администратору", self.reply)
-        self.assertIsNone(self.state.current_state)
-        self.repository.adjust_lesson_credits.assert_not_awaited()
-
-    async def test_malformed_commands_show_format_and_prepare_nothing(self):
-        for text in (
-            "/credits_adjust",
-            "/credits_adjust 2002 +1",  # нет причины
-            "/credits_adjust 2002 2 причина",  # число без знака
-            "/credits_adjust 2002 +0 причина",
-            "/credits_adjust 2002 +1.5 причина",
-            "/credits_adjust abc +1 причина",
-            "/credits_adjust 0 +1 причина",
-            "/credits_adjust 2002 +9999999999 причина",
-        ):
-            with self.subTest(text=text):
-                self.message.answer.reset_mock()
-                await self._start(text)
-                self.assertIn("/credits_adjust", self.reply)
-                self.assertIsNone(self.state.current_state)
 
     async def test_amount_over_configured_limit_is_rejected(self):
         limit = Config.CREDIT_ADJUSTMENT_MAX_DELTA

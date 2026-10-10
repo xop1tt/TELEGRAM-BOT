@@ -13,7 +13,7 @@
 
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
-from ..admin import ADMIN_MENU, BOT_MANAGEMENT_MENU
+from ..admin import ADMIN_MENU, BOT_STATUS
 from ..common import CANCEL, MAIN_MENU, keyboard
 
 
@@ -55,7 +55,7 @@ LEGACY_TO_SECTION = {
 def main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [[BOOK, MY_CLASSES], [PACKAGES, PURCHASES], [PROFILE, HELP]]
     if is_admin:
-        rows.append([ADMIN_MENU, BOT_MANAGEMENT_MENU])
+        rows.append([ADMIN_MENU, BOT_STATUS])
     return keyboard(*rows)
 
 

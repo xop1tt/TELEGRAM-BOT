@@ -159,22 +159,14 @@ class PostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 legacy_payment_id,
             )
 
-        request = await repository.create_lesson_request(
-            self.telegram_id,
-            "booking",
-            "integration test request",
-        )
         profiles = await repository.search_profiles(
             "Integration test",
             limit=10,
         )
-        pending = await repository.list_pending_requests()
 
         self.assertTrue(
             any(profile.telegram_id == self.telegram_id for profile in profiles)
         )
-        self.assertIn(request.id, [item.id for item in pending])
-        self.assertTrue(await repository.complete_request(request.id))
 
         attempt = await repository.begin_lesson_payment_attempt(
             telegram_id=self.telegram_id,
@@ -258,13 +250,6 @@ class PostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await repository.complete_lesson_refund(payment.id))
         self.assertEqual(await repository.get_lesson_credits(self.telegram_id), 0)
 
-        await repository.set_scheduled_restart(
-            datetime.now(timezone.utc) + timedelta(hours=2)
-        )
-        self.assertIsNotNone(await repository.get_scheduled_restart())
-        await repository.clear_scheduled_restart()
-        self.assertIsNone(await repository.get_scheduled_restart())
-
         used_attempt = await repository.begin_lesson_payment_attempt(
             telegram_id=self.telegram_id,
             package_key="single",
@@ -288,12 +273,13 @@ class PostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.telegram_id,
             )
         )
-        booking = await repository.create_lesson_request(
+        slot = await repository.create_class_slot(
+            "beginner",
+            datetime.now(timezone.utc) + timedelta(days=2),
+            5,
             self.telegram_id,
-            "booking",
-            "consume one paid credit",
         )
-        self.assertTrue(await repository.complete_request(booking.id))
+        await repository.book_class_slot(slot.id, self.telegram_id)
         with self.assertRaisesRegex(ValueError, "неиспользованных"):
             await repository.prepare_lesson_refund(
                 used_payment.id,

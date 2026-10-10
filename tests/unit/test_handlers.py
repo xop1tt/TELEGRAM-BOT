@@ -18,15 +18,9 @@ from flamenco_bot.commands import (
 from flamenco_bot.database.repository import ClassSlot, LessonPayment
 from flamenco_bot.handlers.admin import (
     admin_command,
-    complete_request,
-    list_requests,
     save_participant_name,
     save_participant_phone,
     search_participants,
-    select_name_target,
-    select_phone_target,
-    start_edit_participant_name,
-    start_edit_participant_phone,
     start_participant_search,
 )
 from flamenco_bot.handlers.core import (
@@ -151,7 +145,7 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
 
         buttons = reply_labels(self.message.last_answer.kwargs["reply_markup"])
         self.assertIn("🛠 Админ-меню", buttons)
-        self.assertIn("⚙️ Управление ботом", buttons)
+        self.assertIn("📊 Состояние бота", buttons)
 
     async def test_help_shows_admin_commands_only_to_admins(self):
         await help_command(self.message, self.state, self.repository)
@@ -165,8 +159,8 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
         self.repository.get_profile.return_value = self.repository.profile
         await help_command(self.message, self.state, self.repository)
         self.assertIn("/client", self.message.last_answer.args[0])
-        # Прежние команды по-прежнему упомянуты для администратора.
-        self.assertIn("/requests", self.message.last_answer.args[0])
+        # Возврат оплаты по-прежнему — командой.
+        self.assertIn("/refund", self.message.last_answer.args[0])
 
     async def test_account_command_opens_profile_without_service_fields(self):
         await account_command(self.message, self.repository, self.state)
@@ -441,18 +435,10 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
                 "🏠 Главное меню",
             },
         )
-        await list_requests(self.message, self.repository)
-        self.repository.list_pending_requests.assert_awaited_once()
-        await complete_request(FakeMessage(text="/done bad"), self.repository)
-        self.repository.complete_request.assert_not_awaited()
-        await complete_request(FakeMessage(text="/done 7"), self.repository)
-        self.repository.complete_request.assert_awaited_once_with(7)
-
         self.repository.profile = replace(self.repository.profile, is_admin=False)
         self.repository.get_profile.return_value = self.repository.profile
         await admin_command(self.message, self.state, self.repository)
-        await list_requests(self.message, self.repository)
-        self.assertEqual(self.repository.list_pending_requests.await_count, 1)
+        self.assertIn("только администратору", self.message.last_answer.args[0])
 
     async def test_admin_can_search_and_edit_participants(self):
         self.repository.profile = replace(self.repository.profile, is_admin=True)
@@ -467,18 +453,15 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
             self.repository.search_profiles.assert_awaited_once_with("Анна", limit=20)
             self.assertIn("1001", self.message.last_answer.args[0])
 
-            await start_edit_participant_name(self.message, self.state, self.repository)
-            self.message.text = "1001"
-            await select_name_target(self.message, self.state, self.repository)
+            # Имя и телефон меняются из карточки участника (a:cn / a:cph).
+            await self.state.set_state(AdminForm.waiting_for_name_value)
+            await self.state.update_data(target_telegram_id=1001)
             self.message.text = "Новое имя"
             await save_participant_name(self.message, self.state, self.repository)
             self.repository.update_user_name.assert_awaited_once_with(1001, "Новое имя")
 
-            await start_edit_participant_phone(
-                self.message, self.state, self.repository
-            )
-            self.message.text = "1001"
-            await select_phone_target(self.message, self.state, self.repository)
+            await self.state.set_state(AdminForm.waiting_for_phone_value)
+            await self.state.update_data(target_telegram_id=1001)
             self.message.text = "+79991234567"
             await save_participant_phone(self.message, self.state, self.repository)
             self.repository.update_phone.assert_awaited_once_with(
@@ -493,14 +476,6 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
         await search_participants(self.message, self.state, self.repository)
         self.repository.search_profiles.assert_not_awaited()
         self.assertIsNone(self.state.current_state)
-
-    async def test_admin_empty_request_list(self):
-        self.repository.list_pending_requests = AsyncMock(return_value=[])
-
-        self.repository.profile = replace(self.repository.profile, is_admin=True)
-        self.repository.get_profile.return_value = self.repository.profile
-        await list_requests(self.message, self.repository)
-        self.assertIn("нет", self.message.last_answer.args[0])
 
     async def test_command_registry_hides_admin_commands_from_clients(self):
         client = {command.command for command in get_client_commands()}

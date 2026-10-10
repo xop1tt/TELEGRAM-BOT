@@ -30,7 +30,6 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("flamenco_bot.main.configure_logging", return_value=logger),
-            patch("flamenco_bot.main.create_answers_logger", return_value=logger),
             patch("flamenco_bot.main.Config.ENV", "development"),
             patch("flamenco_bot.main.is_database_configured", return_value=True),
             patch(
@@ -171,7 +170,6 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         with (
             redirect_stdout(output),
             patch("flamenco_bot.main.configure_logging", return_value=logger),
-            patch("flamenco_bot.main.create_answers_logger", return_value=logger),
             patch("flamenco_bot.main.Config.ENV", "development"),
             patch("flamenco_bot.main.Config.ADMINS", [8373364453, 123456789]),
             patch("flamenco_bot.main.is_database_configured", return_value=True),
@@ -215,7 +213,6 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("flamenco_bot.main.configure_logging", return_value=logger),
-            patch("flamenco_bot.main.create_answers_logger", return_value=logger),
             patch("flamenco_bot.main.Config.ENV", "production"),
             patch("flamenco_bot.main.Config.ADMINS", [123456789]),
             patch("flamenco_bot.main.is_database_configured", return_value=True),

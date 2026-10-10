@@ -31,9 +31,7 @@ async def cancel_current_action(
         current_state
         in {
             AdminForm.waiting_for_search.state,
-            AdminForm.waiting_for_name_target.state,
             AdminForm.waiting_for_name_value.state,
-            AdminForm.waiting_for_phone_target.state,
             AdminForm.waiting_for_phone_value.state,
             AdminForm.waiting_for_slot_time.state,
             AdminForm.waiting_for_slot_capacity.state,

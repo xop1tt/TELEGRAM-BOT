@@ -199,31 +199,6 @@ class CreditLedgerPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("refund_reservation", types)
         await self._assert_consistent(100)
 
-    async def test_legacy_request_debits_through_single_path_and_links_payment(self):
-        await self._user(100)
-        payment_id = await self._paid(100, lessons=2)
-        request = await self.repo.create_lesson_request(100, "booking", "legacy")
-
-        self.assertTrue(await self.repo.complete_request(request.id))
-
-        self.assertEqual(await self._balance(100), 1)
-        use = (await self._ledger(100))[-1]
-        self.assertEqual(
-            (use["entry_type"], use["delta"], use["payment_id"], use["reference_key"]),
-            ("lesson_use", -1, payment_id, "request:{}".format(request.id)),
-        )
-        await self._assert_consistent(100)
-
-    async def test_legacy_request_without_credits_is_closed_without_ledger_entry(self):
-        await self._user(100)
-        request = await self.repo.create_lesson_request(100, "booking", "legacy")
-
-        self.assertTrue(await self.repo.complete_request(request.id))
-        self.assertFalse(await self.repo.complete_request(request.id))
-
-        self.assertEqual(await self._balance(100), 0)
-        self.assertEqual(await self._ledger(100), [])
-
     async def test_change_credits_refuses_to_run_outside_a_transaction(self):
         await self._user(100)
         async with self.pool.acquire() as connection:

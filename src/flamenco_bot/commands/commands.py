@@ -29,7 +29,6 @@ def get_admin_commands() -> list[BotCommand]:
         BotCommand(command="slot", description="Карточка занятия: /slot ID"),
         BotCommand(command="client", description="Карточка участника: /client ID"),
         BotCommand(command="support_tickets", description="Обращения поддержки"),
-        BotCommand(command="credits_adjust", description="Корректировка баланса"),
         BotCommand(command="credits_audit", description="Сверка баланса с ledger"),
         BotCommand(command="ledger", description="Последние операции с балансом"),
         BotCommand(command="audit", description="Журнал действий"),

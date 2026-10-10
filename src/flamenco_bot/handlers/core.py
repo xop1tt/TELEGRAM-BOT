@@ -45,13 +45,10 @@ ADMIN_HELP = (
     "/slot ID — карточка занятия\n"
     "/client ID — карточка участника\n"
     "/support_tickets — обращения поддержки\n"
-    "/credits_adjust ID +N|-N причина — корректировка баланса\n"
     "/credits_audit — сверка баланса с ledger\n"
     "/ledger [ID] — последние операции с балансом\n"
     "/audit — журнал действий\n"
-    "/refund ID причина, /refund_check ID — возврат оплаты\n\n"
-    "Прежние команды тоже работают: /slot_add, /slot_capacity, /slot_close, "
-    "/support_reply, /support_close, /requests, /done."
+    "/refund ID причина, /refund_check ID — возврат оплаты"
 )
 
 

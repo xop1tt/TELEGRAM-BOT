@@ -1,6 +1,5 @@
 import time
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -16,7 +15,7 @@ from flamenco_bot.database.repository import (
     UserBooking,
 )
 from flamenco_bot.handlers.support import (
-    reply_to_support_ticket,
+    deliver_support_reply,
     start_support,
     start_support_reply,
     submit_support_message,
@@ -147,12 +146,11 @@ class SupportHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.state.current_state)
         self.assertIn("Сообщение не отправлено", self.message.last_answer.args[0])
 
-    async def test_admin_reply_is_authorized_and_delivered(self):
-        self.repository.profile = replace(self.repository.profile, is_admin=True)
-        self.repository.get_profile.return_value = self.repository.profile
-        self.message.text = "/support_reply 7 Ответ"
-
-        await reply_to_support_ticket(self.message, self.repository)
+    async def test_admin_reply_is_delivered_with_reply_button(self):
+        # Права проверяет кнопка «Ответить» в админ-панели (test_admin_panel).
+        result = await deliver_support_reply(
+            self.message.bot, self.repository, 7, 1001, "Ответ"
+        )
 
         self.repository.reply_support_ticket.assert_awaited_once_with(7, 1001, "Ответ")
         self.message.bot.send_message.assert_awaited_once()
@@ -166,7 +164,7 @@ class SupportHandlerTests(unittest.IsolatedAsyncioTestCase):
             ),
             ["support_reply"],
         )
-        self.assertIn("доставлен", self.message.last_answer.args[0])
+        self.assertIn("доставлен", result)
 
     async def test_reply_button_reopens_support_input(self):
         callback = FakeCallback("support_reply")
@@ -175,14 +173,6 @@ class SupportHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.state.current_state, "SupportForm:waiting_for_message")
         self.assertIn("ответ придёт в этот чат", callback.message.last_answer.args[0])
-
-    async def test_non_admin_cannot_reply_to_support_ticket(self):
-        self.message.text = "/support_reply 7 Ответ"
-
-        await reply_to_support_ticket(self.message, self.repository)
-
-        self.repository.reply_support_ticket.assert_not_awaited()
-        self.assertIn("только администратору", self.message.last_answer.args[0])
 
 
 class SlotsScreenTests(unittest.IsolatedAsyncioTestCase):

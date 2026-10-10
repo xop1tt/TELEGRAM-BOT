@@ -67,20 +67,6 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.repository.search_profiles("x", limit=101)
 
-    async def test_request_operations_and_validation(self):
-        request = await self.repository.create_lesson_request(
-            1001,
-            "booking",
-            "вечером",
-        )
-        self.assertEqual(request.id, 7)
-        self.assertEqual(len(await self.repository.list_pending_requests()), 1)
-        self.assertTrue(await self.repository.complete_request(7))
-        with self.assertRaises(ValueError):
-            await self.repository.create_lesson_request(1001, "invalid", "x")
-        with self.assertRaises(ValueError):
-            await self.repository.list_pending_requests(101)
-
     async def test_connect_requires_database_url(self):
         with self.assertRaisesRegex(ValueError, "DATABASE_URL"):
             await PostgresRepository.connect("")

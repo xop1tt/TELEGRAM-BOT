@@ -1,11 +1,6 @@
 import unittest
 
 from flamenco_bot.handlers import router as bot_router
-from flamenco_bot.keyboards.admin import (
-    BOT_CANCEL_SCHEDULED_RESTART,
-    BOT_SCHEDULE_RESTART,
-    bot_management_keyboard,
-)
 from flamenco_bot.keyboards.user.account import router as account_keyboard_router
 from flamenco_bot.keyboards.user.main_menu import router as main_menu_keyboard_router
 from flamenco_bot.keyboards.user import (
@@ -49,14 +44,9 @@ class KeyboardTests(unittest.TestCase):
         admin_labels = labels(main_menu_keyboard(is_admin=True))
         regular_labels = labels(main_menu_keyboard())
         self.assertIn("🛠 Админ-меню", admin_labels)
-        self.assertIn("⚙️ Управление ботом", admin_labels)
+        self.assertIn("📊 Состояние бота", admin_labels)
         self.assertNotIn("🛠 Админ-меню", regular_labels)
-        self.assertNotIn("⚙️ Управление ботом", regular_labels)
-
-    def test_bot_management_menu_contains_restart_schedule_actions(self):
-        management = labels(bot_management_keyboard())
-        self.assertIn(BOT_SCHEDULE_RESTART, management)
-        self.assertIn(BOT_CANCEL_SCHEDULED_RESTART, management)
+        self.assertNotIn("📊 Состояние бота", regular_labels)
 
     def test_profile_keyboard_contains_edit_actions_and_home(self):
         self.assertEqual(

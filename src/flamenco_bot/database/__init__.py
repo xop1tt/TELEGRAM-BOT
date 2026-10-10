@@ -1,7 +1,6 @@
 from .errors import is_database_unavailable
 from .repository import (
     EmailAlreadyRegisteredError,
-    LessonRequest,
     PostgresRepository,
     TelegramAlreadyLinkedError,
     UserBooking,
@@ -12,7 +11,6 @@ from .repository import (
 
 __all__ = [
     "EmailAlreadyRegisteredError",
-    "LessonRequest",
     "PostgresRepository",
     "TelegramAlreadyLinkedError",
     "UserBooking",

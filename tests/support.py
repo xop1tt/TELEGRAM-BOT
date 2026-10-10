@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, Mock
 from flamenco_bot.database.repository import (
     DatabaseHealth,
     LessonPayment,
-    LessonRequest,
     UserStatistics,
     UserProfile,
 )
@@ -120,14 +119,6 @@ class FakeRepository:
             registered_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
             is_admin=False,
         )
-        self.request = LessonRequest(
-            id=7,
-            telegram_id=1001,
-            kind="booking",
-            details="Фламенко для начинающих; пожелания по времени: вечером",
-            status="pending",
-            created_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
-        )
         self.get_or_create_profile = AsyncMock(return_value=self.profile)
         self.initialize = AsyncMock()
         self.close = AsyncMock()
@@ -142,7 +133,6 @@ class FakeRepository:
         self.update_user_name = AsyncMock()
         self.search_profiles = AsyncMock(return_value=[self.profile])
         self.get_profile = AsyncMock(return_value=self.profile)
-        self.create_lesson_request = AsyncMock(return_value=self.request)
         self.list_class_slots = AsyncMock(return_value=[])
         self.list_available_class_slots = AsyncMock(return_value=[])
         self.create_class_slot = AsyncMock()
@@ -156,8 +146,6 @@ class FakeRepository:
         self.reply_support_ticket = AsyncMock(return_value=1001)
         self.list_open_support_tickets = AsyncMock(return_value=[])
         self.close_support_ticket = AsyncMock(return_value=1001)
-        self.list_pending_requests = AsyncMock(return_value=[self.request])
-        self.complete_request = AsyncMock(return_value=True)
         self.record_activity = AsyncMock()
         self.get_user_statistics = AsyncMock(
             return_value=UserStatistics(total_users=10, online_users=2)

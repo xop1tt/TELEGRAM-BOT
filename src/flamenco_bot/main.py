@@ -5,7 +5,6 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.utils.token import TokenValidationError
 
-from .runtime.answers_logging import AnswersLogMiddleware, create_answers_logger
 from .runtime.bot_lifecycle import RestartController, restart_process
 from .runtime.bot_logging import (
     UpdateLoggingMiddleware,
@@ -65,7 +64,6 @@ async def main():
             admins=Config.ADMINS,
             logger=logger,
             source_root=Path(__file__).resolve().parent,
-            restart_store=None,
         )
 
         repository = await PostgresRepository.connect(
@@ -82,7 +80,6 @@ async def main():
             Config.DATABASE_POOL_MAX_SIZE,
         )
 
-        bot.session.middleware(AnswersLogMiddleware(create_answers_logger()))
         dp = Dispatcher()
         lifecycle.dispatcher = dp
         dp["repository"] = repository
@@ -106,8 +103,6 @@ async def main():
 
         await repository.initialize()
         heartbeat_path = heartbeat_path_from_env()
-        lifecycle.restart_store = repository
-        await lifecycle.restore_scheduled_restart()
         await register_commands(bot, repository, logger)
         lifecycle_tasks = [
             asyncio.create_task(
@@ -168,8 +163,7 @@ async def main():
                 print(
                     "Не удалось запустить бота: "
                     "сервер PostgreSQL недоступен. Запустите сервер БД "
-                    "или очистите DATABASE_URL в .env, если временно допустимо "
-                    "хранение только в памяти.",
+                    "и проверьте DATABASE_URL в .env.",
                     file=sys.stderr,
                     flush=True,
                 )
