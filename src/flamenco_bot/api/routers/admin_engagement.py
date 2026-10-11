@@ -228,6 +228,22 @@ async def report(
 
 EXPORT_KINDS = ("payments", "bookings", "clients")
 
+# Ячейка, начинающаяся с этих символов, в Excel/LibreOffice — формула. Имя
+# и телефон участник задаёт сам (бот, сайт), поэтому без экранирования
+# «=HYPERLINK(...)» в имени выполнится у администратора при открытии
+# выгрузки (CSV injection). Апостроф впереди делает ячейку текстом.
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_cell(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M")
+    if value is None:
+        return ""
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
 
 @router.get("/export/{kind}.csv")
 async def export_csv(
@@ -244,14 +260,7 @@ async def export_csv(
     if rows:
         writer.writerow(rows[0].keys())
         for row in rows:
-            writer.writerow(
-                [
-                    value.strftime("%Y-%m-%d %H:%M")
-                    if isinstance(value, datetime)
-                    else ("" if value is None else value)
-                    for value in row.values()
-                ]
-            )
+            writer.writerow([_csv_cell(value) for value in row.values()])
     return Response(
         content="﻿" + buffer.getvalue(),
         media_type="text/csv; charset=utf-8",

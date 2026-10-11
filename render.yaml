@@ -45,3 +45,8 @@ services:
         sync: false
       - key: BOT_USERNAME
         sync: false
+      # Общий секрет сайта (Netlify) и API, ≥ 32 символов, то же значение в
+      # переменных Netlify. Без него лимит попыток входа общий для всех
+      # посетителей сайта: десять неверных паролей закрывают вход всем.
+      - key: FRONTEND_PROXY_SECRET
+        sync: false

@@ -67,6 +67,19 @@ class TelegramLoginVerificationTests(unittest.TestCase):
         with self.assertRaises(InvalidTelegramAuthError):
             verify_telegram_login(payload, BOT_TOKEN)
 
+    def test_auth_date_older_than_an_hour_is_rejected(self):
+        payload = sign_telegram_payload(
+            make_telegram_payload(auth_date=time.time() - 61 * 60)
+        )
+        with self.assertRaises(InvalidTelegramAuthError):
+            verify_telegram_login(payload, BOT_TOKEN)
+
+    def test_auth_date_within_an_hour_is_accepted(self):
+        payload = sign_telegram_payload(
+            make_telegram_payload(auth_date=time.time() - 50 * 60)
+        )
+        self.assertEqual(verify_telegram_login(payload, BOT_TOKEN), 555)
+
     def test_missing_hash_is_rejected(self):
         with self.assertRaises(InvalidTelegramAuthError):
             verify_telegram_login(make_telegram_payload(), BOT_TOKEN)

@@ -38,7 +38,10 @@ logger = logging.getLogger("bot.services.auth")
 MIN_PASSWORD_LENGTH = 8
 # Верхняя граница — чтобы PBKDF2 не считал хеш от мегабайтной строки.
 MAX_PASSWORD_LENGTH = 256
-_TELEGRAM_AUTH_MAX_AGE_SECONDS = 24 * 60 * 60
+# Подписанные данные Telegram-виджета действительны час: перехваченный
+# payload нельзя использовать для входа сутки спустя. Сайт входит через
+# бота (/api/auth/telegram/connect), виджет — запасной путь API.
+_TELEGRAM_AUTH_MAX_AGE_SECONDS = 60 * 60
 # PBKDF2-HMAC-SHA256: доступен в любой сборке hashlib (в отличие от scrypt,
 # который на некоторых платформах требует OpenSSL с поддержкой scrypt).
 # Итерации — по рекомендации OWASP (2023) для PBKDF2-SHA256.

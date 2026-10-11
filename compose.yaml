@@ -18,6 +18,8 @@ x-backend: &backend
 services:
   bot:
     <<: *backend
+    mem_limit: 256m
+    pids_limit: 256
     env_file:
       - .env
     environment:
@@ -48,6 +50,8 @@ services:
   # остаётся одна публичная точка входа.
   api:
     <<: *backend
+    mem_limit: 384m
+    pids_limit: 256
     command: ["python", "-m", "flamenco_bot.api"]
     env_file:
       - .env

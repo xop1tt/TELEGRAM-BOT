@@ -191,6 +191,12 @@ class ApiDatabaseUnavailableTests(PostgresApiTestCase):
         self.assertEqual(response.status_code, 503)
         self.assertNotIn("connection was closed", response.text)
 
+    def test_health_reveals_only_status(self):
+        response = self.client.get("/api/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+
     def test_health_returns_503_when_database_is_down(self):
         self.fail_with("health_check", DatabaseUnavailableError("down"))
 

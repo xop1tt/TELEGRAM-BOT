@@ -267,10 +267,11 @@ class ApiAuthTests(PostgresApiTestCase):
         )
         self.assertEqual(blocked.status_code, 429)
 
-    def test_health_endpoint_reports_backend(self):
+    def test_health_endpoint_reports_only_status(self):
+        # Тип хранилища и пул — не публично (аудит безопасности).
         response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["backend"], "postgres")
+        self.assertEqual(response.json(), {"status": "ok"})
 
 
 if __name__ == "__main__":

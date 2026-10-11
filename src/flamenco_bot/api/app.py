@@ -73,6 +73,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         allow_insecure_local=WebConfig.ENV == "development",
     )
     logger.info("API storage backend=postgres")
+    if WebConfig.ENV == "production" and not WebConfig.FRONTEND_PROXY_SECRET:
+        # Без общего секрета backend не знает IP посетителей сайта: все
+        # попытки входа приходят с адреса прокси платформы, и лимит
+        # /api/auth/* (10 попыток за 5 минут) становится общим для всех —
+        # десять неверных паролей от кого угодно закрывают вход всем.
+        logger.warning(
+            "FRONTEND_PROXY_SECRET is not set: auth rate limit is shared by all "
+            "site visitors (see docs/deployment.md)"
+        )
     await repository.initialize()
     # Направления, абонементы и правила записи — из базы (миграция 017).
     await CatalogService(repository).refresh()
@@ -175,7 +184,18 @@ async def internal_error_handler(request: Request, error: Exception) -> JSONResp
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Flamenco Studio API", lifespan=lifespan)
+    # Схема и интерактивная документация (/docs, /redoc, /openapi.json) —
+    # только для разработки: в production API открыт в интернет (Render), и
+    # полная карта /api/admin/* лишь упрощает разведку. Права от этого не
+    # зависят — их проверяет каждый эндпоинт.
+    docs = WebConfig.ENV != "production"
+    app = FastAPI(
+        title="Flamenco Studio API",
+        lifespan=lifespan,
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+        openapi_url="/openapi.json" if docs else None,
+    )
     # Показатели нагрузки для окна администратора (/api/admin/metrics):
     # создаются вместе с приложением, а не в lifespan — их видят и тесты.
     app.state.request_metrics = RequestMetrics()
@@ -222,12 +242,11 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health() -> dict:
-        health_status = await app.state.repository.health_check()
-        return {
-            "backend": health_status.backend,
-            "pool_size": health_status.pool_size,
-            "idle_connections": health_status.idle_connections,
-        }
+        # Проверкам Render и Docker нужен только код ответа (200 / 503 при
+        # недоступной БД). Подробности о пуле — в /api/admin/metrics, не
+        # публично.
+        await app.state.repository.health_check()
+        return {"status": "ok"}
 
     return app
 
