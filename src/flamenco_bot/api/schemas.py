@@ -285,10 +285,22 @@ class UserBookingResponse(BaseModel):
     # Время до последнего переноса студией (None — не переносилось).
     previous_starts_at: Optional[datetime] = None
     slot_cancel_reason: Optional[str] = None
+    # После своей отмены записаться на это занятие снова можно не раньше
+    # этого момента (пауза из правил студии); None — паузы нет.
+    rebook_available_at: Optional[datetime] = None
 
     @classmethod
     def from_record(cls, booking: UserBooking) -> "UserBookingResponse":
         status = booking_status(booking)
+        rebook_available_at = None
+        if (
+            booking.booking_status == "cancelled"
+            and booking.cancelled_by == "user"
+            and booking.updated_at is not None
+        ):
+            available = booking.updated_at + rules().rebook_cooldown
+            if available > datetime.now(timezone.utc):
+                rebook_available_at = available
         return cls(
             id=booking.id,
             slot_id=booking.slot_id,
@@ -304,6 +316,7 @@ class UserBookingResponse(BaseModel):
             cancelled_by=booking.cancelled_by,
             previous_starts_at=booking.previous_starts_at,
             slot_cancel_reason=booking.slot_cancel_reason,
+            rebook_available_at=rebook_available_at,
         )
 
 

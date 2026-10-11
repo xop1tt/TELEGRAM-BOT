@@ -177,6 +177,35 @@ class ApiBookingsTests(PostgresApiTestCase):
         mine = self.client.get("/api/bookings/me")
         self.assertEqual(mine.json()[0]["booking_status"], "cancelled")
 
+    def test_my_bookings_show_when_rebooking_is_allowed_after_own_cancel(self):
+        """Сайт вместо кнопки «Записаться» пишет «можно через N часов»."""
+        self._login()
+        self._grant_credits(1001)
+        own = self._create_slot()
+        by_studio = self._create_slot()
+        self.client.post("/api/bookings", json={"slot_id": own.id})
+        self.client.delete("/api/bookings/{}".format(own.id))
+        self.client.post("/api/bookings", json={"slot_id": by_studio.id})
+
+        async def cancel_as_admin():
+            await self.repository.cancel_class_slot_booking(
+                by_studio.id, 1001, admin_telegram_id=77
+            )
+
+        self.run_async(cancel_as_admin())
+
+        mine = {
+            item["slot_id"]: item for item in self.client.get("/api/bookings/me").json()
+        }
+        available = datetime.fromisoformat(
+            mine[own.id]["rebook_available_at"].replace("Z", "+00:00")
+        )
+        hours_left = (available - datetime.now(timezone.utc)).total_seconds() / 3600
+        self.assertAlmostEqual(hours_left, 12, delta=0.1)
+        # Отмена студией паузы не включает.
+        self.assertIsNone(mine[by_studio.id]["rebook_available_at"])
+        self.assertEqual(mine[by_studio.id]["cancelled_by"], "studio")
+
     def test_cancel_booking_too_close_to_start_returns_conflict(self):
         self._login()
         self._grant_credits(1001)

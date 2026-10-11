@@ -270,6 +270,8 @@ class UserBooking:
     # Время занятия до последнего переноса студией.
     previous_starts_at: Optional[datetime] = None
     slot_cancel_reason: Optional[str] = None
+    # Когда бронь последний раз менялась: для отменённой — время отмены.
+    updated_at: Optional[datetime] = None
 
     @property
     def cancellation_deadline(self) -> datetime:
@@ -301,6 +303,7 @@ class UserBooking:
             rescheduled_at=record.get("rescheduled_at"),
             previous_starts_at=record.get("previous_starts_at"),
             slot_cancel_reason=record.get("slot_cancel_reason"),
+            updated_at=record.get("updated_at"),
         )
 
 
@@ -2369,6 +2372,7 @@ class PostgresRepository(
                 SELECT booking.id, booking.slot_id, slot.class_key,
                        slot.starts_at, booking.status AS booking_status,
                        slot.status AS slot_status, booking.booked_at,
+                       booking.updated_at,
                        slot.rescheduled_at, slot.cancel_reason AS slot_cancel_reason,
                        CASE
                            WHEN booking.status <> 'cancelled' THEN NULL
