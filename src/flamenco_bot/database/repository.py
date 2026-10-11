@@ -331,6 +331,23 @@ class InsufficientLessonCreditsError(RuntimeError):
     """Raised when the user has no lesson credits left to spend on a booking."""
 
 
+def _cancelled_by_studio_sql(booking: str) -> str:
+    """SQL-выражение: запись отменила студия, а не сам участник.
+
+    Отдельного поля у брони нет; администратор, отменяя запись за
+    участника, возвращает занятие проводкой с ``actor_telegram_id``, а своя
+    отмена — без него. Смотрим последний возврат по брони: одна и та же
+    строка брони переиспользуется при повторной записи.
+    """
+    return """COALESCE((
+        SELECT COALESCE(ledger.actor_telegram_id, 0) <> 0
+        FROM lesson_credit_ledger AS ledger
+        WHERE ledger.booking_id = {booking}.id AND ledger.delta > 0
+        ORDER BY ledger.id DESC
+        LIMIT 1
+    ), FALSE)""".format(booking=booking)
+
+
 class BookingCooldownError(RuntimeError):
     """Raised when rebooking a slot the same user just cancelled too recently."""
 
@@ -2077,9 +2094,11 @@ class PostgresRepository(
 
                 existing = await connection.fetchrow(
                     """
-                    SELECT id, status, updated_at FROM lesson_bookings
+                    SELECT id, status, updated_at,
+                           {studio} AS cancelled_by_studio
+                    FROM lesson_bookings AS booking
                     WHERE slot_id = $1 AND telegram_id = $2
-                    """,
+                    """.format(studio=_cancelled_by_studio_sql("booking")),
                     slot_id,
                     telegram_id,
                 )
@@ -2093,7 +2112,14 @@ class PostgresRepository(
                         already_booked=True,
                     )
                 booking_rules = await _booking_rules(connection)
-                if existing is not None and existing["status"] == "cancelled":
+                # Пауза — только после своей отмены: если запись отменила
+                # студия, участник может сразу записаться снова.
+                cooldown = (
+                    existing is not None
+                    and existing["status"] == "cancelled"
+                    and not existing["cancelled_by_studio"]
+                )
+                if cooldown:
                     cooldown_ends_at = (
                         existing["updated_at"] + booking_rules.rebook_cooldown
                     )
@@ -2125,13 +2151,15 @@ class PostgresRepository(
                     DO UPDATE SET status = 'confirmed', booked_at = NOW(),
                                   updated_at = NOW()
                     WHERE lesson_bookings.status = 'cancelled'
-                          AND lesson_bookings.updated_at <= NOW() - $3::INTERVAL
+                          AND (lesson_bookings.updated_at <= NOW() - $3::INTERVAL
+                               OR NOT $4::BOOLEAN)
                     RETURNING id
                     """,
                     slot_id,
                     telegram_id,
                     # То же правило, что в проверке выше — из той же транзакции.
                     booking_rules.rebook_cooldown,
+                    cooldown,
                 )
                 if booking is None:
                     raise SlotUnavailableError("Не удалось подтвердить место")
@@ -2347,6 +2375,7 @@ class PostgresRepository(
                            WHEN slot.status = 'cancelled'
                                 AND booking.updated_at >= slot.cancelled_at
                            THEN 'studio'
+                           WHEN {studio} THEN 'studio'
                            ELSE 'user'
                        END AS cancelled_by,
                        moved.old_starts_at AS previous_starts_at
@@ -2363,7 +2392,7 @@ class PostgresRepository(
                 WHERE booking.telegram_id = $1
                 ORDER BY slot.starts_at DESC, booking.id DESC
                 LIMIT $2 OFFSET $3
-                """,
+                """.format(studio=_cancelled_by_studio_sql("booking")),
                 telegram_id,
                 limit,
                 offset,

@@ -232,6 +232,28 @@ class DomainPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(booking.already_booked)
         self.assertEqual(await self.repo.get_lesson_credits(500), 1)
 
+    # Пауза повторной записи — только после своей отмены; отмену
+    # администратором история показывает как отмену студией.
+    async def test_admin_cancel_skips_rebook_cooldown_and_is_studio_cancel(self):
+        await self._user(510, 2)
+        slot = await self._slot()
+        await self.repo.book_class_slot(slot.id, 510)
+        await self.repo.cancel_class_slot_booking(slot.id, 510, admin_telegram_id=1)
+
+        history = await self.repo.list_bookings_for_telegram_id(510)
+        self.assertEqual(history[0].cancelled_by, "studio")
+
+        booking = await self.repo.book_class_slot(slot.id, 510)
+        self.assertFalse(booking.already_booked)
+        self.assertEqual(await self.repo.get_lesson_credits(510), 1)
+
+        # Своя отмена той же (переиспользованной) брони — снова пауза и «вами».
+        await self.repo.cancel_class_slot_booking(slot.id, 510)
+        history = await self.repo.list_bookings_for_telegram_id(510)
+        self.assertEqual(history[0].cancelled_by, "user")
+        with self.assertRaises(BookingCooldownError):
+            await self.repo.book_class_slot(slot.id, 510)
+
     # Имя участника — из профиля бота и на сайте.
     async def test_web_account_shows_profile_name_from_bot(self):
         auth = AuthService(self.repo, BOT_TOKEN)
