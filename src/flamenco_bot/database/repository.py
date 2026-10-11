@@ -24,7 +24,7 @@ logger = logging.getLogger("bot.database")
 # Схему создают и меняют миграции репозитория базы данных (DATABASE,
 # migrate.py); бот и API только проверяют при старте, что она не старее
 # нужной этому коду. Повышайте вместе с кодом, которому нужна новая миграция.
-REQUIRED_SCHEMA_VERSION = "019"
+REQUIRED_SCHEMA_VERSION = "020"
 MAX_SUPPORT_MESSAGE_LENGTH = 2000
 # Бизнес-правила бронирования слотов, подтверждённые владельцем продукта:
 # - запись стоит 1 lesson_credit, отмена возвращает его;
@@ -586,6 +586,8 @@ from .admin_queries import PostgresAdminMixin  # noqa: E402
 from .staff_postgres import PostgresStaffMixin  # noqa: E402
 from .catalog_postgres import PostgresCatalogMixin  # noqa: E402
 from .waitlist_postgres import PostgresWaitlistMixin, notify_waitlist  # noqa: E402
+from .engagement_postgres import PostgresEngagementMixin  # noqa: E402
+from .reports_postgres import PostgresReportsMixin  # noqa: E402
 
 
 class PostgresRepository(
@@ -594,6 +596,8 @@ class PostgresRepository(
     PostgresStaffMixin,
     PostgresCatalogMixin,
     PostgresWaitlistMixin,
+    PostgresEngagementMixin,
+    PostgresReportsMixin,
 ):
     def __init__(self, pool: Any) -> None:
         self._pool = pool

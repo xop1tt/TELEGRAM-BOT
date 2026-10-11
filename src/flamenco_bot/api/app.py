@@ -39,6 +39,8 @@ from .routers.admin import router as admin_router
 from .routers.admin import staff_router as admin_staff_router
 from .routers.admin_clients import router as admin_clients_router
 from .routers.waitlist import router as waitlist_router
+from .routers.admin_engagement import router as admin_engagement_router
+from .routers.admin_engagement import staff_router as admin_engagement_staff_router
 from .routers.auth import router as auth_router
 from .routers.bookings import router as bookings_router
 from .routers.classes import router as classes_router
@@ -211,6 +213,8 @@ def create_app() -> FastAPI:
     app.include_router(admin_staff_router)
     app.include_router(admin_router)
     app.include_router(admin_clients_router)
+    app.include_router(admin_engagement_staff_router)
+    app.include_router(admin_engagement_router)
 
     @app.get("/api/health")
     async def health() -> dict:

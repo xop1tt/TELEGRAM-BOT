@@ -30,6 +30,9 @@ AUDIT_ACTION_LABELS = {
     "studio_rules_updated": "изменены правила записи",
     "booking_created": "запись участника на занятие",
     "booking_cancelled": "отмена записи участника",
+    "broadcast_sent": "рассылка",
+    "note_added": "добавлена заметка об участнике",
+    "note_deleted": "удалена заметка об участнике",
 }
 
 

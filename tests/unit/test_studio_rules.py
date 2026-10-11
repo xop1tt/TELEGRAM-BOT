@@ -200,6 +200,7 @@ class NotificationTextTests(unittest.TestCase):
                 "lessons": 2,
                 "expires_at": "2026-10-20T16:00:00+00:00",
             },
+            "announcement": {"broadcast_id": 1, "body": "Новое расписание"},
             "waitlist_seat": {
                 "class_key": "beginner",
                 "slot_id": 5,

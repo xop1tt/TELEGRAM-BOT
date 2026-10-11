@@ -293,12 +293,16 @@ async def slot_card(
             "Перенесено студией {}".format(format_studio_datetime(slot.rescheduled_at))
         )
     if participants:
+        notes = await repository.latest_notes_for_slot(slot_id)
         lines.extend(["", "Участники:"])
         lines.extend(
-            "• {} (ID {}){}".format(
+            "• {} (ID {}){}{}".format(
                 participant.user_name,
                 participant.telegram_id,
                 ", " + participant.phone if participant.phone else "",
+                "\n  📝 " + notes[participant.telegram_id][:120]
+                if participant.telegram_id in notes
+                else "",
             )
             for participant in participants[:20]
         )

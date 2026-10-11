@@ -393,10 +393,15 @@ async def slot_participants(
     slot_id: int = _db_id(),
     staff: StaffActor = Depends(require_staff),
     schedule: ScheduleService = Depends(get_schedule_service),
+    repository: Any = Depends(get_repository),
 ) -> List[AdminParticipantResponse]:
     await _slot_or_404(schedule, slot_id, staff)
     participants = await schedule.participants(slot_id, include_cancelled=True)
-    return [AdminParticipantResponse(**vars(item)) for item in participants]
+    notes = await repository.latest_notes_for_slot(slot_id)
+    return [
+        AdminParticipantResponse(**vars(item), note=notes.get(item.telegram_id))
+        for item in participants
+    ]
 
 
 @router.put("/slots/{slot_id}/teacher", response_model=AdminSlotResponse)

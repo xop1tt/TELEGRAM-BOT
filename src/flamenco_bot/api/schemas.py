@@ -6,7 +6,7 @@
 
 import uuid
 from datetime import date, datetime, timezone
-from typing import Annotated, Any, List, Literal, Mapping, Optional
+from typing import Annotated, Any, Dict, List, Literal, Mapping, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -885,6 +885,8 @@ class AdminParticipantResponse(BaseModel):
     phone: Optional[str]
     booked_at: datetime
     status: str
+    # Последняя служебная заметка об участнике (уровень, ограничения).
+    note: Optional[str] = None
 
 
 class AdminAccountResponse(BaseModel):
@@ -1087,3 +1089,64 @@ class AdminSupportActionResponse(BaseModel):
     # delivered — ответ доставлен в Telegram; saved_not_delivered — сохранён,
     # но Telegram не доставил; closed — обращение закрыто.
     status: str
+
+
+# ---------- рассылки, заметки, уведомления ----------
+
+
+class AdminSegmentRequest(BaseModel):
+    segment: str = Field(pattern="^(all|with_credits|slot|direction)$")
+    params: dict = Field(default_factory=dict)
+
+
+class AdminSegmentCountResponse(BaseModel):
+    recipients: int
+
+
+class AdminBroadcastRequest(AdminSegmentRequest):
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class AdminBroadcastResponse(BaseModel):
+    id: int
+    author_telegram_id: int
+    author_name: Optional[str]
+    body: str
+    segment: str
+    segment_params: dict
+    recipients: int
+    created_at: datetime
+    sent: int = 0
+    failed: int = 0
+
+
+class AdminNoteRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=1000)
+
+
+class AdminNoteResponse(BaseModel):
+    id: int
+    telegram_id: int
+    author_telegram_id: int
+    author_name: Optional[str]
+    body: str
+    created_at: datetime
+
+
+class AdminFailedNotificationResponse(BaseModel):
+    id: int
+    telegram_id: int
+    user_name: Optional[str]
+    kind: str
+    delivery_status: str
+    attempts: int
+    last_error: Optional[str]
+    created_at: datetime
+
+
+class AdminFailedNotificationsPage(BaseModel):
+    # Число уведомлений по статусам за 30 дней и сколько участников
+    # недоступно (бот заблокирован и т. п.).
+    stats: Dict[str, int]
+    items: List[AdminFailedNotificationResponse]
+    next_before_id: Optional[int] = None

@@ -195,6 +195,10 @@ def render_notification(
             ),
             (PACKAGES_ACTION,),
         )
+    if kind == "announcement":
+        return NotificationMessage(
+            "Сообщение студии", str(payload.get("body") or ""), (SCHEDULE_ACTION,)
+        )
     if kind == "waitlist_seat":
         class_key = str(payload.get("class_key") or "")
         slot_id = payload.get("slot_id")
