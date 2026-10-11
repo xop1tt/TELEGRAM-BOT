@@ -219,6 +219,21 @@ class NotificationTextTests(unittest.TestCase):
                 "reason": "ошибка",
             },
             "credits_adjusted": {"delta": -1, "balance": 2, "reason": "ошибка"},
+            **{
+                kind: {
+                    "maintenance_id": 1,
+                    "revision": 1,
+                    "starts_at": "2026-10-12T23:30:00+00:00",
+                    "ends_at": "2026-10-13T01:00:00+00:00",
+                }
+                for kind in (
+                    "maintenance_warning",
+                    "maintenance_started",
+                    "maintenance_rescheduled",
+                    "maintenance_cancelled",
+                    "maintenance_completed",
+                )
+            },
         }
         self.assertEqual(set(payloads), set(NOTIFICATION_KINDS))
         for kind, payload in payloads.items():

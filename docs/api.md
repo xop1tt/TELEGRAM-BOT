@@ -183,7 +183,51 @@ API.
 
 Типы (`kind`): `booking_confirmed`, `booking_cancelled`, `slot_cancelled`,
 `slot_rescheduled`, `lesson_reminder`, `low_balance`, `package_granted`,
-`package_revoked`, `credits_adjusted`.
+`package_revoked`, `credits_adjusted`, `package_expiring`, `credits_expired`,
+`waitlist_seat`, `announcement`, `maintenance_*` (см. «Техническое
+обслуживание сайта»).
+
+## Техническое обслуживание сайта
+
+Состояние хранится в `site_maintenance` (миграция 021 DATABASE) — один
+источник для сайта, API и бота. Время — ISO 8601 со смещением (в БД — UTC),
+людям показывается в поясе студии `STUDIO_TIMEZONE`.
+
+- `GET /api/maintenance` — публично, `Cache-Control: no-store` →
+  `{"mode": "normal" | "scheduled" | "active", "title", "description",
+  "starts_at", "ends_at", "server_time", "retry_after"}`. При `normal` тексты
+  и время — `null`. Окно с наступившим началом отдаётся как `active` сразу,
+  не дожидаясь фоновой задачи; наступление `ends_at` обслуживание не
+  выключает.
+
+Только администратору (роль `admin` в `staff_members`; иначе `401`/`403`):
+
+- `GET /api/admin/maintenance` — текущее окно (с планом предупреждений,
+  журналом и статистикой доставки), история, значения по умолчанию, размер
+  аудитории.
+- `GET /api/admin/maintenance/{id}` — то же по одному окну.
+- `POST /api/admin/maintenance` `{"title", "description", "starts_at",
+  "ends_at"?, "warning_minutes": [1440, 60, 10], "notify_users": true,
+  "audience": "all" | "staff", "start_now": false}` → `201`. Время без пояса —
+  `422`; начало в прошлом, окончание раньше начала — `422`; уже есть
+  незавершённое окно — `409`. `start_now` включает обслуживание сразу.
+- `PATCH /api/admin/maintenance/{id}` — только переданные поля
+  (`ends_at: null` — окончание неизвестно). Во время работ — только тексты и
+  окончание, иначе `409`. Изменение времени — перенос: получившим
+  предупреждение уходит уведомление о переносе.
+- `POST /api/admin/maintenance/{id}/start` — включить запланированное сейчас.
+- `POST /api/admin/maintenance/{id}/complete` — работы завершены (только
+  идущие; `409` иначе). Только после этого уходит уведомление о завершении.
+- `POST /api/admin/maintenance/{id}/cancel` — отменить запланированное
+  (начавшееся — только завершить, `409`).
+- `POST /api/admin/maintenance/preview` — тело как у создания → тексты всех
+  уведомлений, план предупреждений и число получателей. Ничего не
+  сохраняет и не отправляет (тестовый режим).
+
+`audience: "staff"` — тестовый режим: уведомления получают только
+сотрудники. Уведомления (`kind`): `maintenance_warning`,
+`maintenance_started`, `maintenance_rescheduled`, `maintenance_cancelled`,
+`maintenance_completed` — в общей ленте и в Telegram.
 
 ## Поддержка
 

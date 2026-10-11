@@ -64,7 +64,13 @@ def retry_delay(attempts: int) -> timedelta:
 
 
 async def _is_outdated(repository: Any, notification: UserNotification) -> bool:
-    """Напоминание о занятии, которое перенесли, отменили или отменили запись."""
+    """Напоминание о занятии, которое перенесли, отменили или отменили запись;
+    уведомление об обслуживании, которое уже не соответствует его состоянию
+    (например, предупреждение о перенесённых или отменённых работах)."""
+    if notification.kind.startswith("maintenance_"):
+        return not await repository.is_maintenance_notification_current(
+            notification.kind, notification.payload
+        )
     if notification.kind != "lesson_reminder":
         return False
     payload = notification.payload
@@ -203,9 +209,36 @@ async def run_notification_worker(
                     except Exception:
                         # Сбой сгорания не должен останавливать отправку.
                         logger.exception("Credit expiry processing failed")
+                try:
+                    await process_maintenance(repository, logger)
+                except Exception:
+                    # Сбой постановки уведомлений об обслуживании не должен
+                    # останавливать остальную отправку (а включение
+                    # обслуживания от неё и так не зависит — см.
+                    # maintenance.py).
+                    logger.exception("Maintenance processing failed")
                 await dispatch_due_notifications(repository, bot, logger)
         except Exception:
             logger.exception("Notification worker iteration failed")
+
+
+async def process_maintenance(repository: Any, logger: logging.Logger) -> dict:
+    """Автостарт обслуживания и постановка недостающих уведомлений о нём.
+
+    Каждую итерацию (раз в несколько секунд): предупреждения за 10 минут и
+    начало работ не должны ждать пятиминутного цикла напоминаний. Шаг
+    идемпотентен — повтор после сбоя или рестарта досылает только
+    недостающее (``site_maintenance_dispatches``).
+    """
+    summary = await repository.process_maintenance()
+    if summary["started"] or summary["queued"] or summary["skipped"]:
+        logger.info(
+            "Maintenance processed started=%s queued=%s skipped_late=%s",
+            summary["started"],
+            summary["queued"],
+            summary["skipped"],
+        )
+    return summary
 
 
 async def process_credit_expiry(repository: Any, logger: logging.Logger) -> None:

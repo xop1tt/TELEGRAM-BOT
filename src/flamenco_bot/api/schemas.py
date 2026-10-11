@@ -8,8 +8,9 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Annotated, Any, Dict, List, Literal, Mapping, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
+from .. import maintenance
 from ..class_catalog import CLASS_LABELS
 from ..studio_rules import rules
 from ..database.repository import (
@@ -1150,3 +1151,150 @@ class AdminFailedNotificationsPage(BaseModel):
     stats: Dict[str, int]
     items: List[AdminFailedNotificationResponse]
     next_before_id: Optional[int] = None
+
+
+# ---------- техническое обслуживание сайта ----------
+
+
+class MaintenanceStatusResponse(BaseModel):
+    """Публичное состояние обслуживания — только то, что нужно странице."""
+
+    mode: Literal["normal", "scheduled", "active"]
+    title: Optional[str] = None
+    description: Optional[str] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    # Время сервера: страница обслуживания поправляет по нему часы
+    # посетителя для обратного отсчёта.
+    server_time: datetime
+    retry_after: int = 600
+
+
+class MaintenanceCreateRequest(BaseModel):
+    title: str = Field(default=maintenance.DEFAULT_TITLE, min_length=1, max_length=120)
+    description: str = Field(
+        default=maintenance.DEFAULT_DESCRIPTION, min_length=1, max_length=1000
+    )
+    starts_at: Optional[AwareDatetime] = None
+    ends_at: Optional[AwareDatetime] = None
+    warning_minutes: List[int] = Field(
+        default_factory=lambda: list(maintenance.DEFAULT_WARNING_MINUTES),
+        max_length=maintenance.MAX_WARNINGS,
+    )
+    notify_users: bool = True
+    audience: Literal["all", "staff"] = "all"
+    # Включить сразу, без планирования.
+    start_now: bool = False
+
+
+class MaintenanceUpdateRequest(BaseModel):
+    """Изменение окна: учитываются только переданные поля
+    (``ends_at: null`` — окончание неизвестно)."""
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, min_length=1, max_length=1000)
+    starts_at: Optional[AwareDatetime] = None
+    ends_at: Optional[AwareDatetime] = None
+    warning_minutes: Optional[List[int]] = Field(
+        default=None, max_length=maintenance.MAX_WARNINGS
+    )
+    notify_users: Optional[bool] = None
+    audience: Optional[Literal["all", "staff"]] = None
+
+    def changes(self) -> Dict[str, Any]:
+        provided = {key: getattr(self, key) for key in self.model_fields_set}
+        # null допустим только для окончания; у остальных полей — «не менять».
+        return {
+            key: value
+            for key, value in provided.items()
+            if value is not None or key == "ends_at"
+        }
+
+
+class MaintenanceWarningPlanResponse(BaseModel):
+    minutes: int
+    due_at: datetime
+    state: Literal["wait", "send", "late"]
+    # Этап уже обработан: поставлен (число получателей) или пропущен.
+    recipients: Optional[int] = None
+    skipped_reason: Optional[str] = None
+
+
+class MaintenanceWindowResponse(BaseModel):
+    id: int
+    status: Literal["scheduled", "active", "completed", "cancelled"]
+    # С учётом наступившего начала (запланированное → активное).
+    effective_status: Literal["scheduled", "active", "completed", "cancelled"]
+    title: str
+    description: str
+    starts_at: datetime
+    ends_at: Optional[datetime]
+    warning_minutes: List[int]
+    notify_users: bool
+    audience: Literal["all", "staff"]
+    revision: int
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    created_by: int
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_window(
+        cls, window: "maintenance.MaintenanceWindow", now: datetime
+    ) -> "MaintenanceWindowResponse":
+        values = dict(vars(window))
+        values["warning_minutes"] = list(window.warning_minutes)
+        return cls(effective_status=window.effective_status(now), **values)
+
+
+class MaintenanceEventResponse(BaseModel):
+    id: int
+    event: str
+    actor_telegram_id: Optional[int]
+    actor_name: Optional[str]
+    details: Dict[str, Any]
+    created_at: datetime
+
+
+class MaintenanceDeliveryResponse(BaseModel):
+    """Доставка уведомлений одного типа: отправлено, не доставлено, ждёт."""
+
+    kind: str
+    sent: int = 0
+    failed: int = 0
+    skipped: int = 0
+    pending: int = 0
+
+
+class MaintenanceDetailResponse(BaseModel):
+    window: MaintenanceWindowResponse
+    warnings: List[MaintenanceWarningPlanResponse]
+    events: List[MaintenanceEventResponse]
+    delivery: List[MaintenanceDeliveryResponse]
+
+
+class MaintenanceOverviewResponse(BaseModel):
+    current: Optional[MaintenanceDetailResponse]
+    history: List[MaintenanceWindowResponse]
+    default_title: str = maintenance.DEFAULT_TITLE
+    default_description: str = maintenance.DEFAULT_DESCRIPTION
+    default_warning_minutes: List[int] = Field(
+        default_factory=lambda: list(maintenance.DEFAULT_WARNING_MINUTES)
+    )
+    audience_all: int
+    audience_staff: int
+    server_time: datetime
+
+
+class MaintenancePreviewMessage(BaseModel):
+    kind: str
+    text: str
+
+
+class MaintenancePreviewResponse(BaseModel):
+    """Тестовый режим: тексты и расписание без записи и без отправки."""
+
+    messages: List[MaintenancePreviewMessage]
+    warnings: List[MaintenanceWarningPlanResponse]
+    recipients: int

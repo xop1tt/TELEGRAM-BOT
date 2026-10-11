@@ -36,6 +36,11 @@ NOTIFICATION_KINDS = frozenset(
         "credits_expired",
         "waitlist_seat",
         "announcement",
+        "maintenance_warning",
+        "maintenance_started",
+        "maintenance_rescheduled",
+        "maintenance_cancelled",
+        "maintenance_completed",
     }
 )
 

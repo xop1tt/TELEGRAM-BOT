@@ -12,13 +12,18 @@ from typing import Any, Mapping, Optional, Tuple
 
 from .class_catalog import CLASS_LABELS
 from .presentation import balance_line, format_class_time, lessons_count
-from .studio_time import to_studio_time
+from .studio_time import format_studio_datetime, to_studio_time
 
 
 MY_CLASSES_ACTION = ("💃 Мои занятия", "my")
 SCHEDULE_ACTION = ("📅 Расписание", "slots:all")
 BUY_ACTION = ("💳 Купить абонемент", "packs:0")
 PACKAGES_ACTION = ("🎟 Абонементы", "mypacks")
+
+
+# Название студии в уведомлениях об обслуживании сайта — как на сайте и в
+# боте.
+STUDIO_NAME = "Mirada Studio"
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,95 @@ def _day_word(moment: datetime, now: datetime) -> str:
     if days == 1:
         return "Завтра"
     return format_class_time(moment).split(" · ")[0]
+
+
+def _maintenance_end(payload: Mapping[str, Any], unknown: str) -> str:
+    ends_at = _moment(payload.get("ends_at"))
+    if ends_at is None:
+        return unknown
+    return "Ожидаемое завершение: {}.".format(format_studio_datetime(ends_at))
+
+
+def _paragraphs(*blocks: str) -> str:
+    return "\n\n".join(block for block in blocks if block)
+
+
+def _render_maintenance(kind: str, payload: Mapping[str, Any]) -> NotificationMessage:
+    starts_at = _moment(payload.get("starts_at"))
+    start_line = format_studio_datetime(starts_at) if starts_at else ""
+    if kind == "maintenance_warning":
+        return NotificationMessage(
+            "{}: плановое обслуживание".format(STUDIO_NAME),
+            _paragraphs(
+                "Начало: {}".format(start_line) if start_line else "",
+                _join(
+                    "Мы проведём технические работы, чтобы улучшить работу платформы.",
+                    _maintenance_end(
+                        payload, "Время завершения сообщим дополнительно."
+                    ),
+                ),
+                "Во время обслуживания сайт может быть временно недоступен.",
+                "Мы сообщим, когда работы начнутся и когда сайт снова будет доступен.",
+            ),
+            (SCHEDULE_ACTION,),
+        )
+    if kind == "maintenance_started":
+        return NotificationMessage(
+            "{}: техническое обслуживание началось".format(STUDIO_NAME),
+            _paragraphs(
+                "Сайт временно недоступен, пока мы проводим запланированные работы.",
+                _maintenance_end(payload, "Время завершения пока неизвестно."),
+                "Если время завершения изменится, мы сообщим дополнительно.",
+                "Telegram-бот работает как обычно: расписание и запись — по "
+                "кнопке ниже.",
+                "Спасибо за понимание!",
+            ),
+            (SCHEDULE_ACTION,),
+        )
+    if kind == "maintenance_rescheduled":
+        if payload.get("phase") == "active":
+            return NotificationMessage(
+                "{}: время завершения работ изменилось".format(STUDIO_NAME),
+                _paragraphs(
+                    _maintenance_end(
+                        payload, "Точное время завершения пока неизвестно."
+                    ),
+                    "Мы сообщим, когда сайт снова будет доступен.",
+                ),
+                (SCHEDULE_ACTION,),
+            )
+        return NotificationMessage(
+            "{}: обслуживание перенесено".format(STUDIO_NAME),
+            _paragraphs(
+                _join(
+                    "Новое время начала: {}".format(start_line) if start_line else "",
+                    _maintenance_end(
+                        payload, "Время завершения сообщим дополнительно."
+                    ),
+                ),
+                "До начала работ сайт работает как обычно.",
+            ),
+            (SCHEDULE_ACTION,),
+        )
+    if kind == "maintenance_cancelled":
+        return NotificationMessage(
+            "{}: обслуживание отменено".format(STUDIO_NAME),
+            _paragraphs(
+                "Технические работы{} не состоятся.".format(
+                    ", запланированные на {},".format(start_line) if start_line else ""
+                ),
+                "Сайт работает в обычном режиме.",
+            ),
+            (SCHEDULE_ACTION,),
+        )
+    return NotificationMessage(
+        "{} снова работает!".format(STUDIO_NAME),
+        _paragraphs(
+            "Техническое обслуживание завершено, сайт снова доступен.",
+            "Спасибо за терпение. Возвращаемся к занятиям и танцам!",
+        ),
+        (SCHEDULE_ACTION,),
+    )
 
 
 def render_notification(
@@ -214,6 +308,8 @@ def render_notification(
             ),
             actions,
         )
+    if kind.startswith("maintenance_"):
+        return _render_maintenance(kind, payload)
     if kind == "package_expiring":
         expires_at = _moment(payload.get("expires_at"))
         lessons = int(payload.get("lessons") or 0)
