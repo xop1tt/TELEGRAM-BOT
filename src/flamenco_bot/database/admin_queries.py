@@ -261,6 +261,23 @@ class PostgresAdminMixin:
             )
         return [AdminPayment(**dict(record)) for record in records]
 
+    async def get_live_counts(self) -> dict:
+        """Лёгкие счётчики для страницы «Система» (опрос раз в 5 секунд)."""
+        async with self._pool.acquire() as connection:
+            record = await connection.fetchrow(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM bot_users
+                     WHERE last_seen_at >= NOW() - INTERVAL '5 minutes')::INTEGER
+                        AS online_users,
+                    (SELECT COUNT(*) FROM support_tickets
+                     WHERE status = 'open')::INTEGER AS open_tickets,
+                    (SELECT COUNT(*) FROM lesson_payments
+                     WHERE status = 'pending')::INTEGER AS pending_payments
+                """
+            )
+        return dict(record)
+
     async def get_admin_payment(self, payment_id: int) -> Optional[AdminPayment]:
         async with self._pool.acquire() as connection:
             record = await connection.fetchrow(

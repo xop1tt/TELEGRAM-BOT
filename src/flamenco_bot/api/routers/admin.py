@@ -125,15 +125,14 @@ async def dashboard(
 async def metrics(
     request: Request,
     repository: Any = Depends(get_repository),
-    admin_service: AdminService = Depends(get_admin_service),
 ) -> AdminMetricsResponse:
-    """Нагрузка для плавающего окна администратора (опрашивается раз в
-    несколько секунд): HTTP-запросы, процесс API, база, фоновые задачи."""
+    """Нагрузка для страницы «Система» (опрашивается раз в 5 секунд, пока
+    страница открыта): HTTP-запросы, процесс API, база, фоновые задачи."""
     state = request.app.state
     requests = state.request_metrics.snapshot()
     process = await state.process_metrics.snapshot()
     database = await repository.get_database_metrics()
-    summary = await admin_service.dashboard()
+    counts = await repository.get_live_counts()
     tasks = []
     for name, attribute in (
         ("Уведомления участникам", "notification_task"),
@@ -157,9 +156,7 @@ async def metrics(
         ),
         database=AdminDatabaseStatsResponse(**vars(database)),
         background_tasks=tasks,
-        online_users=summary.online_users,
-        open_tickets=summary.open_tickets,
-        pending_payments=summary.pending_payments,
+        **counts,
     )
 
 
