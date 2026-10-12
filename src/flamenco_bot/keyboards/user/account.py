@@ -35,18 +35,11 @@ NAME_INPUT_TTL_SECONDS = 15 * 60
 
 async def profile_text(message: Message, repository: Any) -> str:
     profile = await ensure_profile(message, repository)
-    return (
-        "Профиль\n"
-        "Имя: {}\n"
-        "Телефон: {}\n"
-        "{}.\n\n"
-        "Этот же аккаунт работает и на сайте студии — вход через Telegram."
-        "{}"
-    ).format(
+    return ("Профиль\nИмя: {}\nТелефон: {}\n{}.{}").format(
         profile.user_name,
         profile.phone or "не указан",
         balance_line(profile.lesson_credits),
-        "\n" + website_line("Личный кабинет") if website_line() else "",
+        "\n\n" + website_line("Личный кабинет") if website_line() else "",
     )
 
 

@@ -412,8 +412,9 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
 
         self.message.text = "Продолжающая группа"
         await open_legacy_section(self.message, self.state, self.repository)
-        self.repository.list_class_slots.assert_awaited_with(
-            class_key="intermediate", limit=50
+        self.assertEqual(
+            self.repository.list_class_slots.await_args.kwargs["class_key"],
+            "intermediate",
         )
 
         self.message.text = "👤 Учетная запись"

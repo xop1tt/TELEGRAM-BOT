@@ -1547,6 +1547,7 @@ class PostgresRepository(
         self,
         telegram_id: int,
         limit: int = 20,
+        offset: int = 0,
     ) -> Sequence[LessonPaymentHistoryItem]:
         if not 1 <= limit <= 100:
             raise ValueError("Количество платежей должно быть от 1 до 100")
@@ -1557,11 +1558,12 @@ class PostgresRepository(
                        status, created_at
                 FROM lesson_payments
                 WHERE telegram_id = $1
-                ORDER BY created_at DESC
-                LIMIT $2
+                ORDER BY created_at DESC, id DESC
+                LIMIT $2 OFFSET $3
                 """,
                 telegram_id,
                 limit,
+                offset,
             )
         return [LessonPaymentHistoryItem.from_record(record) for record in records]
 

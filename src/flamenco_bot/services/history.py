@@ -123,9 +123,10 @@ class HistoryService:
         telegram_id: Optional[int],
         limit: int = 10,
         before_id: Optional[int] = None,
+        offset: int = 0,
     ) -> Sequence[HistoryOperation]:
         entries = await self.repository.list_credit_history(
-            telegram_id, limit=limit, before_id=before_id
+            telegram_id, limit=limit, before_id=before_id, offset=offset
         )
         return [describe_entry(entry) for entry in entries]
 

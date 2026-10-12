@@ -9,7 +9,8 @@ callback_data (≤ 64 байт). Выбранное занятие (slot_id) п�
 callback_data: так оно не теряется при сбросе FSM, переходе по меню или
 перезапуске бота. 0 — занятие не выбрано.
 
-  slots:<filter>                       ближайшие занятия (all или ключ направления)
+  slots:<filter>[:<week>]              занятия на 7 дней (all или ключ направления;
+                                       week — сдвиг на 7 дней вперёд, 0 — ближайшие)
   book:<class_key>:<slot_id>           записаться (список, после оплаты, старые)
   bookok:<class_key>:<slot_id>         подтверждённая запись (меньше 24 ч до начала)
   my                                   «Мои занятия»
@@ -27,12 +28,13 @@ callback_data: так оно не теряется при сбросе FSM, пе
 """
 
 import logging
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any, Optional, Sequence
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
+from ...config import Config
 from ...class_catalog import (
     ACTIVE_CLASS_KEYS,
     CLASS_LABELS,
@@ -50,11 +52,15 @@ from ...presentation import (
     plural,
 )
 from ...services.profile import upcoming_bookings
+from ...studio_time import to_studio_time
 
 
 logger = logging.getLogger("bot.handlers.screens")
 
-MAX_SLOTS_ON_SCREEN = 10
+# Расписание показывает 7 дней; кнопками листается вперёд и назад.
+SCHEDULE_DAYS = 7
+MAX_SCHEDULE_WEEKS = 12
+MAX_SLOTS_ON_SCREEN = 60
 
 
 def is_slot_filter(key: str) -> bool:
@@ -144,25 +150,44 @@ def waitlist_button_text(slot: ClassSlot) -> str:
     )
 
 
+def _studio_midnight(day: date) -> datetime:
+    return datetime.combine(day, time.min, tzinfo=Config.STUDIO_TIMEZONE)
+
+
 async def slots_screen(
     repository: Any,
     telegram_id: int,
     filter_key: str = "all",
     notice: str = "",
+    week: int = 0,
 ) -> tuple[str, InlineKeyboardMarkup]:
+    """Занятия на 7 дней: ``week`` 0 — от сегодня, 1 — следующие 7 дней и т. д."""
+    week = min(max(week, 0), MAX_SCHEDULE_WEEKS)
+    today = to_studio_time(datetime.now(Config.STUDIO_TIMEZONE)).date()
+    first_day = today + timedelta(days=SCHEDULE_DAYS * week)
+    last_day = first_day + timedelta(days=SCHEDULE_DAYS - 1)
     # Открытые занятия: со свободными местами — запись, заполненные — лист
     # ожидания (миграция 019).
     slots = [
         slot
         for slot in await repository.list_class_slots(
-            class_key=None if filter_key == "all" else filter_key, limit=50
+            class_key=None if filter_key == "all" else filter_key,
+            limit=100,
+            starts_after=(
+                _studio_midnight(first_day) - timedelta(seconds=1) if week else None
+            ),
+            starts_before=_studio_midnight(last_day + timedelta(days=1)),
         )
         if slot.status == "open"
     ][:MAX_SLOTS_ON_SCREEN]
     bookable = [slot for slot in slots if is_bookable(slot)]
     credits = await repository.get_lesson_credits(telegram_id)
 
-    title = "Ближайшие занятия"
+    title = "{}: {} – {}".format(
+        "Занятия" if week else "Ближайшие занятия",
+        first_day.strftime("%d.%m"),
+        last_day.strftime("%d.%m"),
+    )
     if filter_key != "all":
         title += " — {}".format(CLASS_LABELS[filter_key])
     lines = [notice] if notice else []
@@ -180,8 +205,8 @@ async def slots_screen(
         )
     if not slots:
         lines.append(
-            "Сейчас свободных занятий{} нет. Загляните позже или напишите нам "
-            "в «💬 Поддержка».".format(
+            "На эти дни свободных занятий{} нет. Загляните на другую неделю "
+            "или напишите нам в «💬 Поддержка».".format(
                 " по этому направлению" if filter_key != "all" else ""
             )
         )
@@ -189,7 +214,7 @@ async def slots_screen(
     def filter_button(key: str) -> InlineKeyboardButton:
         label = "Все направления" if key == "all" else CLASS_SHORT_LABELS[key]
         prefix = "✓ " if key == filter_key else ""
-        return button(prefix + label, "slots:{}".format(key))
+        return button(prefix + label, "slots:{}:{}".format(key, week))
 
     keys = ["all", *ACTIVE_CLASS_KEYS]
     rows = [
@@ -204,6 +229,14 @@ async def slots_screen(
         ]
         for slot in slots
     )
+    navigation = []
+    if week > 0:
+        navigation.append(button("⬅️ Назад", "slots:{}:{}".format(filter_key, week - 1)))
+    if week < MAX_SCHEDULE_WEEKS:
+        navigation.append(
+            button("Вперёд ➡️", "slots:{}:{}".format(filter_key, week + 1))
+        )
+    rows.append(navigation)
     rows.append([button(MY_CLASSES_BUTTON, "my"), button(ABOUT_BUTTON, "about")])
     return "\n".join(lines), markup(*rows)
 

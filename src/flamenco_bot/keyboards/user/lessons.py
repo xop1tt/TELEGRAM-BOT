@@ -68,14 +68,16 @@ async def ensure_callback_profile(callback: CallbackQuery, repository: Any) -> N
 async def show_slots(
     callback: CallbackQuery, repository: Any, state: FSMContext
 ) -> None:
-    filter_key = (callback.data or "").split(":", 1)[1]
+    parts = (callback.data or "").split(":")
+    filter_key = parts[1] if len(parts) > 1 else "all"
     if not is_slot_filter(filter_key):
         filter_key = "all"
+    week = parse_int(parts[2]) if len(parts) > 2 else 0
     # Переход в другой сценарий — незавершённый ввод текста не должен
     # «поймать» следующее сообщение пользователя.
     await state.clear()
     text, reply_markup = await slots_screen(
-        repository, callback.from_user.id, filter_key
+        repository, callback.from_user.id, filter_key, week=week or 0
     )
     await show(callback, text, reply_markup)
     await callback.answer()

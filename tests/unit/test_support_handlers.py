@@ -202,7 +202,8 @@ class SlotsScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("book:individual:6", data)
         self.assertNotIn("book:intermediate:7", data)
         # Фильтр по направлению — на том же экране.
-        self.assertTrue({"slots:all", "slots:beginner"} <= set(data))
+        self.assertTrue({"slots:all:0", "slots:beginner:0"} <= set(data))
+        self.assertIn("slots:all:1", data)
         slot_button = next(
             button
             for button in inline_buttons(markup)
@@ -218,12 +219,14 @@ class SlotsScreenTests(unittest.IsolatedAsyncioTestCase):
         await show_slots(callback, self.repository, self.state)
 
         # Открытые занятия направления (и заполненные — для листа ожидания).
-        self.repository.list_class_slots.assert_awaited_once_with(
-            class_key="individual", limit=50
+        self.repository.list_class_slots.assert_awaited_once()
+        self.assertEqual(
+            self.repository.list_class_slots.await_args.kwargs["class_key"],
+            "individual",
         )
         text, markup = callback.screen
         self.assertIn("Индивидуальное занятие", text)
-        self.assertIn("Сейчас свободных занятий по этому направлению нет", text)
+        self.assertIn("свободных занятий по этому направлению нет", text)
         self.assertIn("✓ Индивидуально", [b.text for b in inline_buttons(markup)])
         self.state.clear.assert_awaited_once()
 

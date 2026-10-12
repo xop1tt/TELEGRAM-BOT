@@ -108,13 +108,65 @@ class CabinetHandlerTests(PostgresTestCase):
         text, markup = callback.screen
         self.assertIn("История операций", text)
         self.assertIn("Запись на занятие", text)
-        older = [d for d in callback_data(markup) if d.startswith("hist:o:")]
-        self.assertEqual(len(older), 1)
+        # Пять последних операций на странице, дальше — кнопкой «Раньше».
+        self.assertEqual(text.count("• "), 5)
+        self.assertEqual(
+            [d for d in callback_data(markup) if d.startswith("hist:o")], ["hist:o:5"]
+        )
 
-        page = FakeCallback(older[0])
-        await cabinet.show_operations(page, self.repository)
-        self.assertIn("Абонемент от студии", page.screen[0])
-        self.assertIn("оплата наличными", page.screen[0])
+        middle = FakeCallback("hist:o:5")
+        await cabinet.show_operations(middle, self.repository)
+        self.assertEqual(
+            [d for d in callback_data(middle.screen[1]) if d.startswith("hist:o")],
+            ["hist:o:0", "hist:o:10"],
+        )
+
+        last = FakeCallback("hist:o:10")
+        await cabinet.show_operations(last, self.repository)
+        self.assertIn("Абонемент от студии", last.screen[0])
+        self.assertIn("оплата наличными", last.screen[0])
+        self.assertEqual(
+            [d for d in callback_data(last.screen[1]) if d.startswith("hist:o")],
+            ["hist:o:5"],
+        )
+
+    async def test_profile_has_no_website_account_note(self):
+        message = FakeMessage(text="👤 Профиль")
+        await open_profile(message, self.state, self.repository)
+        self.assertNotIn("Этот же аккаунт", message.last_answer.args[0])
+        screen = FakeCallback("prof")
+        await cabinet.show_profile(screen, self.repository, self.state)
+        self.assertNotIn("Этот же аккаунт", screen.screen[0])
+
+    async def test_purchase_history_pages_by_five(self):
+        for number in range(7):
+            await self.repository._pool.execute(
+                "INSERT INTO lesson_payments (telegram_id, package_key, "
+                "package_title, lessons, amount_minor, status, idempotence_key, "
+                "provider_payment_id, confirmation_url) "
+                "VALUES ($1, 'single', $2, 1, 100000, 'succeeded', $3, $4, 'u')",
+                USER_ID,
+                "Покупка {}".format(number),
+                str(uuid.uuid4()),
+                "pay-{}".format(number),
+            )
+        first = FakeCallback("purch:hist")
+        await cabinet.show_purchase_history(first, self.repository)
+        self.assertEqual(first.screen[0].count("• "), 5)
+        self.assertIn("Покупка 6", first.screen[0])
+        self.assertEqual(
+            [d for d in callback_data(first.screen[1]) if d.startswith("purch:hist")],
+            ["purch:hist:5"],
+        )
+
+        second = FakeCallback("purch:hist:5")
+        await cabinet.show_purchase_history(second, self.repository)
+        self.assertEqual(second.screen[0].count("• "), 2)
+        self.assertIn("Покупка 0", second.screen[0])
+        self.assertEqual(
+            [d for d in callback_data(second.screen[1]) if d.startswith("purch:hist")],
+            ["purch:hist:0"],
+        )
 
     async def test_class_history_marks_studio_cancellation_and_reschedule(self):
         cancelled = await self._slot(days=2)

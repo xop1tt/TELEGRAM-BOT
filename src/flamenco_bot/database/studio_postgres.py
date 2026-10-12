@@ -959,8 +959,10 @@ class PostgresStudioMixin:
         telegram_id: Optional[int],
         limit: int = 20,
         before_id: Optional[int] = None,
+        offset: int = 0,
     ) -> Sequence[LedgerEntry]:
-        """Движения занятий из ledger, новые сверху; ``before_id`` — курсор.
+        """Движения занятий из ledger, новые сверху; ``before_id`` — курсор,
+        ``offset`` — сколько последних пропустить (страницы в боте).
 
         ``telegram_id=None`` — по всем участникам (для администратора).
         """
@@ -973,11 +975,12 @@ class PostgresStudioMixin:
                 WHERE ($1::BIGINT IS NULL OR ledger.telegram_id = $1)
                   AND ($2::BIGINT IS NULL OR ledger.id < $2)
                 ORDER BY ledger.id DESC
-                LIMIT $3
+                LIMIT $3 OFFSET $4
                 """,
                 telegram_id,
                 before_id,
                 limit,
+                offset,
             )
         return [LedgerEntry.from_record(record) for record in records]
 

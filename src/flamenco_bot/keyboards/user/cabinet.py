@@ -9,9 +9,9 @@ callback_data (≤ 64 байт):
   prof                    профиль (сводка и быстрые действия)
   prof:name | prof:phone  изменить имя / телефон
   mypacks                 мои абонементы
-  purch:hist              история покупок
+  purch:hist[:<offset>]   история покупок (по 5, offset — сколько пропустить)
   hist:c:<offset>         история занятий
-  hist:o[:<before_id>]    история операций (ledger), курсор — id строки
+  hist:o[:<offset>]       история операций (ledger, по 5)
   notif                   настройки уведомлений
   notif:<rem|low>:<0|1>   выключить / включить
   tickets                 мои обращения в поддержку
@@ -20,7 +20,7 @@ callback_data (≤ 64 байт):
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -51,6 +51,8 @@ logger = logging.getLogger("bot.handlers.cabinet")
 router = Router(name="cabinet_keyboard")
 
 PAGE_SIZE = 10
+# Покупки и операции листаются по пять записей.
+SHORT_PAGE_SIZE = 5
 PAYMENT_STATUS_LABELS = {
     "pending": "ожидает оплаты",
     "succeeded": "оплачен",
@@ -102,13 +104,11 @@ async def profile_screen(
             "Уведомления: напоминания — {}, о малом остатке — {}.".format(
                 _on(overview.settings.reminders), _on(overview.settings.low_balance)
             ),
-            "",
-            "Этот же аккаунт работает на сайте студии — вход через Telegram.",
         ]
     )
     site = website_line("Личный кабинет")
     if site:
-        lines.append(site)
+        lines.extend(["", site])
     return "\n".join(lines), markup(
         [button("✏️ Имя", "prof:name"), button("📱 Телефон", "prof:phone")],
         [button("💃 Мои занятия", "my"), button("🎟 Абонементы", "mypacks")],
@@ -197,14 +197,18 @@ async def show_my_packages(
 
 
 async def purchase_history_screen(
-    repository: Any, telegram_id: int
+    repository: Any, telegram_id: int, offset: int = 0
 ) -> tuple[str, InlineKeyboardMarkup]:
     payments = await repository.list_lesson_payments_for_telegram_id(
-        telegram_id, limit=10
+        telegram_id, limit=SHORT_PAGE_SIZE + 1, offset=offset
     )
+    has_more = len(payments) > SHORT_PAGE_SIZE
+    payments = list(payments)[:SHORT_PAGE_SIZE]
     lines = ["🧾 История покупок"]
     if not payments:
-        lines.extend(["", "Покупок пока нет."])
+        lines.extend(
+            ["", "Покупок пока нет." if offset == 0 else "Больше покупок нет."]
+        )
     else:
         lines.append("")
         lines.extend(
@@ -217,14 +221,34 @@ async def purchase_history_screen(
             for payment in payments
         )
     return "\n".join(lines), markup(
-        [button(BACK + " к покупкам", "packs:0"), button("🎟 Абонементы", "mypacks")]
+        _page_navigation("purch:hist", offset, has_more),
+        [button(BACK + " к покупкам", "packs:0"), button("🎟 Абонементы", "mypacks")],
     )
 
 
-@router.callback_query(F.data == "purch:hist")
+def _page_navigation(prefix: str, offset: int, has_more: bool) -> list:
+    """Кнопки «назад / вперёд» по страницам из пяти записей."""
+    navigation = []
+    if offset > 0:
+        navigation.append(
+            button(
+                "⬅️ Новее",
+                "{}:{}".format(prefix, max(0, offset - SHORT_PAGE_SIZE)),
+            )
+        )
+    if has_more:
+        navigation.append(
+            button("Раньше ➡️", "{}:{}".format(prefix, offset + SHORT_PAGE_SIZE))
+        )
+    return navigation
+
+
+@router.callback_query(F.data.startswith("purch:hist"))
 async def show_purchase_history(callback: CallbackQuery, repository: Any) -> None:
+    parts = (callback.data or "").split(":")
+    offset = min(parse_int(parts[2]) or 0, 10_000) if len(parts) > 2 else 0
     text, reply_markup = await purchase_history_screen(
-        repository, callback.from_user.id
+        repository, callback.from_user.id, offset
     )
     await show(callback, text, reply_markup)
     await callback.answer()
@@ -313,29 +337,24 @@ def operation_line(operation: Any) -> str:
 async def operations_screen(
     repository: Any,
     telegram_id: int,
-    before_id: Optional[int] = None,
+    offset: int = 0,
 ) -> tuple[str, InlineKeyboardMarkup]:
     operations = await HistoryService(repository).operations(
-        telegram_id, limit=PAGE_SIZE + 1, before_id=before_id
+        telegram_id, limit=SHORT_PAGE_SIZE + 1, offset=offset
     )
-    has_more = len(operations) > PAGE_SIZE
-    operations = list(operations)[:PAGE_SIZE]
+    has_more = len(operations) > SHORT_PAGE_SIZE
+    operations = list(operations)[:SHORT_PAGE_SIZE]
     credits = await repository.get_lesson_credits(telegram_id)
     lines = ["🧾 История операций", balance_line(credits) + "."]
     if not operations:
-        lines.extend(["", "Операций пока нет."])
+        lines.extend(
+            ["", "Операций пока нет." if offset == 0 else "Больше операций нет."]
+        )
     else:
         lines.append("")
         lines.extend(operation_line(operation) for operation in operations)
-    navigation = []
-    if before_id is not None:
-        navigation.append(button("⏮ К последним", "hist:o"))
-    if has_more:
-        navigation.append(
-            button("Раньше ➡️", "hist:o:{}".format(operations[-1].entry.id))
-        )
     return "\n".join(lines), markup(
-        navigation,
+        _page_navigation("hist:o", offset, has_more),
         [button("🎟 Абонементы", "mypacks"), button("👤 Профиль", "prof")],
     )
 
@@ -343,9 +362,9 @@ async def operations_screen(
 @router.callback_query(F.data.startswith("hist:o"))
 async def show_operations(callback: CallbackQuery, repository: Any) -> None:
     parts = (callback.data or "").split(":")
-    before_id = parse_int(parts[2]) if len(parts) == 3 else None
+    offset = min(parse_int(parts[2]) or 0, 10_000) if len(parts) > 2 else 0
     text, reply_markup = await operations_screen(
-        repository, callback.from_user.id, before_id
+        repository, callback.from_user.id, offset
     )
     await show(callback, text, reply_markup)
     await callback.answer()
