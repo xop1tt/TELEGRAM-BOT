@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -63,6 +64,9 @@ async def main():
             dispatcher=None,
             logger=logger,
             source_root=Path(__file__).resolve().parent,
+            # Полночь для планового перезапуска — по времени студии, а не
+            # сервера (в контейнере пояс обычно UTC).
+            clock=lambda: datetime.now(Config.STUDIO_TIMEZONE),
         )
 
         repository = await PostgresRepository.connect(
@@ -133,21 +137,22 @@ async def main():
             )
         )
         if Config.ENV == "development":
-            lifecycle_tasks.extend(
-                [
-                    asyncio.create_task(
-                        lifecycle.run_lifecycle_task(
-                            "code_watcher",
-                            lifecycle.watch_code_changes,
-                        )
-                    ),
-                    asyncio.create_task(
-                        lifecycle.run_lifecycle_task(
-                            "midnight_scheduler",
-                            lifecycle.schedule_midnight_restart,
-                        )
-                    ),
-                ]
+            lifecycle_tasks.append(
+                asyncio.create_task(
+                    lifecycle.run_lifecycle_task(
+                        "code_watcher",
+                        lifecycle.watch_code_changes,
+                    )
+                )
+            )
+        if Config.DAILY_RESTART:
+            lifecycle_tasks.append(
+                asyncio.create_task(
+                    lifecycle.run_lifecycle_task(
+                        "midnight_scheduler",
+                        lifecycle.schedule_midnight_restart,
+                    )
+                )
             )
         # Первый heartbeat — запуск завершён (БД, миграции, команды); дальше
         # его обновляет monitor_health после каждой проверки БД.

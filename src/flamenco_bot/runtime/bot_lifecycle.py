@@ -164,8 +164,14 @@ class RestartController:
                 await self.request_restart("code_changed")
             return
 
+    def _now(self) -> datetime:
+        """Текущее время с поясом: часы с поясом (студии) берутся как есть,
+        наивные — в поясе сервера."""
+        now = self.clock()
+        return now if now.tzinfo is not None else now.astimezone()
+
     async def schedule_midnight_restart(self) -> None:
-        now = self.clock().astimezone()
+        now = self._now()
         midnight = next_local_midnight(now)
         reminder_time = midnight - timedelta(hours=1)
         reminder_delay = max(0.0, (reminder_time - now).total_seconds())
@@ -179,9 +185,7 @@ class RestartController:
             pass
 
         await self.notify_admins(RESTART_NOTICE)
-        until_midnight = max(
-            0.0, (midnight - self.clock().astimezone()).total_seconds()
-        )
+        until_midnight = max(0.0, (midnight - self._now()).total_seconds())
         try:
             await self.wait_for(
                 self.restart_event.wait(),

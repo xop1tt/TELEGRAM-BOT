@@ -87,6 +87,17 @@ def parse_website_url(value: str, env: str) -> Optional[str]:
     return url
 
 
+def parse_flag(name: str, value: str, default: bool) -> bool:
+    text = value.strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("{} должен быть 1/0 (true/false)".format(name))
+
+
 class Config:
     """Конфигурация бота"""
 
@@ -142,6 +153,13 @@ class Config:
 
     # Напоминание о занятии: за столько часов до начала (0 — выключено).
     # Приходит только тем, кто записался раньше этого срока.
+    # Ежедневный плановый перезапуск бота в полночь по времени студии (за час
+    # админам уходит предупреждение). В development перезапуск делает сам
+    # процесс (exec), в production процесс завершается, а контейнер поднимает
+    # Docker (restart: unless-stopped) или платформа (Render).
+    DAILY_RESTART: bool = parse_flag(
+        "BOT_DAILY_RESTART", os.getenv("BOT_DAILY_RESTART", ""), True
+    )
     LESSON_REMINDER_HOURS: int = parse_reminder_hours(
         os.getenv("LESSON_REMINDER_HOURS", "3")
     )

@@ -1,0 +1,11 @@
+# Покрытие. Отдельный файл, а не pyproject.toml: на Python 3.10 (он в матрице CI)
+# coverage не читает TOML без tomli. Пакет задан именем, а не путём: в CI он
+# установлен копией в site-packages, и путь src/flamenco_bot не совпал бы.
+# Файлы из отчёта не исключаются.
+[run]
+branch = True
+source_pkgs = flamenco_bot
+
+[report]
+show_missing = True
+skip_empty = True
