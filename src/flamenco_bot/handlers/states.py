@@ -34,3 +34,9 @@ class AdminForm(StatesGroup):
     waiting_for_support_reply = State()
     waiting_for_client_adjustment = State()
     waiting_for_booking_search = State()
+    # Настройки студии (handlers/admin_settings.py).
+    waiting_for_catalog_value = State()
+    waiting_for_rule_value = State()
+    waiting_for_staff_id = State()
+    waiting_for_staff_name = State()
+    waiting_for_note = State()

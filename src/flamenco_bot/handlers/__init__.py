@@ -2,6 +2,7 @@ from aiogram import Router
 
 from .admin import router as admin_router
 from .admin_panel import router as admin_panel_router
+from .admin_settings import router as admin_settings_router
 from .connect import router as connect_router
 from .core import router as core_router
 from .errors import router as errors_router
@@ -22,6 +23,7 @@ router.include_router(main_menu_router)
 router.include_router(admin_router)
 # Ввод текста в админ-сценариях — раньше FSM-обработчиков поддержки/профиля.
 router.include_router(admin_panel_router)
+router.include_router(admin_settings_router)
 router.include_router(support_router)
 router.include_router(account_router)
 router.include_router(lessons_router)

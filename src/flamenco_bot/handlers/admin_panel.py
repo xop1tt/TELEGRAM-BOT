@@ -1418,7 +1418,10 @@ async def client_card(
             button("💳 Покупки", "a:cpay:{}".format(tid)),
             button("🧾 Операции", "a:co:{}".format(tid)),
         ],
-        [button("📨 Обращения", "a:ct:{}".format(tid))],
+        [
+            button("📨 Обращения", "a:ct:{}".format(tid)),
+            button("📝 Заметки", "s:nl:{}".format(tid)),
+        ],
         [
             button("➕ Выдать абонемент", "a:cg:{}".format(tid)),
             button("± Баланс", "a:ca:{}".format(tid)),

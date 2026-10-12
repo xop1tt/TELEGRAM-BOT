@@ -11,16 +11,18 @@ ADMIN_SCHEDULE = "🗓 Расписание занятий"
 ADMIN_CLIENTS = "👥 Клиенты"
 ADMIN_FINANCE = "💰 Финансы"
 SUPPORT_TICKETS = "📨 Обращения поддержки"
+ADMIN_SETTINGS = "⚙️ Настройки"
 
 
 def admin_menu_keyboard(role: str = "admin") -> ReplyKeyboardMarkup:
-    """Администратору — четыре раздела, преподавателю — свои занятия и
+    """Администратору — пять разделов, преподавателю — свои занятия и
     поддержка; действия внутри — inline-кнопками в карточках."""
     if role != "admin":
         return keyboard([ADMIN_SCHEDULE, SUPPORT_TICKETS], [MAIN_MENU])
     return keyboard(
         [ADMIN_SCHEDULE, ADMIN_CLIENTS],
         [SUPPORT_TICKETS, ADMIN_FINANCE],
+        [ADMIN_SETTINGS],
         [MAIN_MENU],
     )
 

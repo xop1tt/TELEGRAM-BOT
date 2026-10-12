@@ -441,6 +441,7 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
                 "👥 Клиенты",
                 "📨 Обращения поддержки",
                 "💰 Финансы",
+                "⚙️ Настройки",
                 "🏠 Главное меню",
             },
         )
