@@ -40,3 +40,4 @@ class AdminForm(StatesGroup):
     waiting_for_staff_id = State()
     waiting_for_staff_name = State()
     waiting_for_note = State()
+    waiting_for_broadcast_text = State()

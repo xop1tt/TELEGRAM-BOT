@@ -443,6 +443,7 @@ class BotFunctionTests(unittest.IsolatedAsyncioTestCase):
                 "📨 Обращения поддержки",
                 "💰 Финансы",
                 "⚙️ Настройки",
+                "📣 Рассылки",
                 "🏠 Главное меню",
             },
         )

@@ -346,6 +346,8 @@ async def slot_card(
         )
     if is_admin and slot.status == "open" and not started:
         rows.append([button("➕ Записать участника", "a:bk:{}".format(slot.id))])
+    if slot.status != "cancelled" and slot.booked_count > 0:
+        rows.append([button("📣 Написать участникам", "b:t:{}".format(slot.id))])
     rows.append([button("📋 Все записи и отмены", "a:sp:{}".format(slot.id))])
     rows.append([button("⬅️ К расписанию", "a:sch")])
     return "\n".join(lines), markup(*rows)
