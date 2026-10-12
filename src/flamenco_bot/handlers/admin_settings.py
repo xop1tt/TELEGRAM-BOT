@@ -1065,7 +1065,7 @@ async def start_note(
     await state.update_data(note_for=_tid(callback))
     await callback.answer()
     await callback.message.answer(
-        "Введите текст заметки (до 500 символов). Её видит только персонал; "
+        "Введите текст заметки (до 1000 символов). Её видит только персонал; "
         "преподаватель видит последнюю заметку у участников своего занятия.",
         reply_markup=admin_input_keyboard(),
     )
