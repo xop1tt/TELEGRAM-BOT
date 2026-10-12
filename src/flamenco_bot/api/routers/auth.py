@@ -265,6 +265,9 @@ async def start_telegram_connect(
         bot_username,
         web_user_id=current_user.id if payload.purpose == "link" else None,
     )
+    # Секрет браузера обязан попасть в браузер — иначе он не докажет, что это
+    # тот же браузер, что начал вход. Одноразовое случайное значение в
+    # httpOnly+Secure-cookie; в БД хранится только его хэш (secret_hash).
     response.set_cookie(
         CONNECT_COOKIE_NAME,
         started.browser_secret,

@@ -13,6 +13,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
+from tests.e2e.serve_api import PASSWORD
 from tests.pg import DATABASE_URL, SKIP_REASON
 
 SERVER = Path(__file__).with_name("serve_api.py")
@@ -76,7 +77,7 @@ class ServeApiTests(unittest.TestCase):
                 status, _ = request(
                     self.info["port"],
                     "/api/auth/login",
-                    {"email": email, "password": self.info["password"]},
+                    {"email": email, "password": PASSWORD},
                 )
                 self.assertEqual(status, 200)
 

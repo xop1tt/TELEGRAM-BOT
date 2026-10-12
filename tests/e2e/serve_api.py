@@ -13,6 +13,7 @@
 
 import asyncio
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,7 +34,10 @@ from flamenco_bot.runtime.security import (  # noqa: E402
 from flamenco_bot.services import AuthService  # noqa: E402
 from tests.pg import fresh_repository, make_admin, set_credits, sql  # noqa: E402
 
-PASSWORD = "e2e-password-1"
+# Пароль тестовых аккаунтов — известная тестовая константа, в вывод не попадает
+# (CodeQL: clear-text logging). Тесты сайта берут то же значение из
+# E2E_PASSWORD или по умолчанию.
+PASSWORD = os.getenv("E2E_PASSWORD", "e2e-password-1")
 USER_ID = 1001
 OTHER_ID = 1002
 ADMIN_ID = 77
@@ -102,7 +106,6 @@ async def main(port: int) -> None:
     actual = server.servers[0].sockets[0].getsockname()[1]
     info = {
         "port": actual,
-        "password": PASSWORD,
         "user_id": USER_ID,
         "other_id": OTHER_ID,
         "admin_id": ADMIN_ID,
