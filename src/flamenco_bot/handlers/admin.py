@@ -130,9 +130,7 @@ async def show_bot_status(
     started_at = datetime.now(timezone.utc) - timedelta(seconds=uptime_seconds)
     lines = [
         "Бот работает.",
-        "Время работы: {} ч {} мин {} сек.".format(
-            days * 24 + hours, minutes, seconds
-        ),
+        "Время работы: {} ч {} мин {} сек.".format(days * 24 + hours, minutes, seconds),
         "Запущен: {}.".format(format_studio_datetime(started_at)),
         "Режим: {}.".format(
             "приём обновлений идёт"

@@ -51,5 +51,15 @@ jobs:
         run: |
           ruff check src tests
           ruff format --check src tests
-      - name: Run unit and PostgreSQL integration tests
-        run: python -m unittest discover -s tests -v
+      - name: Run unit and PostgreSQL integration tests with coverage
+        # TEST_DATABASE_URL задан, поэтому тесты с PostgreSQL не пропускаются:
+        # без базы около 370 тестов молча пропускаются и покрытие падает до ~50%.
+        run: python -m coverage run -m unittest discover -s tests -v
+      - name: Coverage report
+        run: |
+          python -m coverage report --skip-empty --fail-under=85
+          python -m coverage xml -o coverage.xml
+      - name: Check the website API contract server starts
+        # Сервер сквозных тестов сайта (WEBSITE) — часть тестового кода бота:
+        # сломанный импорт или сид-данные нашлись бы только в CI сайта.
+        run: python -m unittest tests.e2e.test_serve_api -v

@@ -24,7 +24,32 @@ from flamenco_bot.database.repository import PostgresRepository
 from flamenco_bot.services.catalog import CatalogService
 from tests.support import apply_migrations
 
-DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+
+def _guard_test_database(url):
+    """Защита от случайного подключения тестов к рабочей базе: они очищают и
+    создают схемы, поэтому адрес должен быть локальным (или явно разрешён
+    ALLOW_REMOTE_TEST_DATABASE=1) и не совпадать с DATABASE_URL."""
+    if not url:
+        return url
+    from urllib.parse import urlparse
+
+    if url == os.getenv("DATABASE_URL"):
+        raise RuntimeError(
+            "TEST_DATABASE_URL совпадает с DATABASE_URL — тесты остановлены"
+        )
+    host = (urlparse(url).hostname or "").lower()
+    if host not in ("localhost", "127.0.0.1", "::1") and not os.getenv(
+        "ALLOW_REMOTE_TEST_DATABASE"
+    ):
+        raise RuntimeError(
+            "TEST_DATABASE_URL указывает не на локальный сервер ({}): тесты "
+            "остановлены. Нужна одноразовая БД; для удалённой тестовой БД "
+            "задайте ALLOW_REMOTE_TEST_DATABASE=1.".format(host)
+        )
+    return url
+
+
+DATABASE_URL = _guard_test_database(os.getenv("TEST_DATABASE_URL"))
 SKIP_REASON = "TEST_DATABASE_URL is not set; configure a dedicated test PostgreSQL"
 
 _schema: Optional[str] = None

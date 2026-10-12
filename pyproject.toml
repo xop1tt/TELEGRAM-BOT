@@ -35,3 +35,11 @@ select = ["E", "F"]
 # периодически помечаются системой как "hidden" (chflags), из-за чего
 # `site.py` их пропускает и `import flamenco_bot` падает — не ошибка кода.
 pythonpath = ["src"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/flamenco_bot"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
