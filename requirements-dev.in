@@ -1,4 +1,4 @@
 -c requirements.txt
 coverage==7.16.2
 httpx==0.28.1
-ruff==0.16.9
+ruff==0.17.0
