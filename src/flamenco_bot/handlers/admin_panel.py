@@ -21,13 +21,13 @@ callback_data (префикс ``a:``, ≤ 64 байт):
   a:bkx:<id>:<tid> / a:bkxok:<id>:<tid>              отменить его запись
   a:cli                поиск клиента         a:c:<tid>               карточка
   a:cb:<tid>:<offset>  занятия клиента       a:cp:<tid>              абонементы
-  a:cpay:<tid>         покупки               a:co:<tid>[:<before>]   операции
+  a:cpay:<tid>         покупки               a:co:<tid>[:<смещ.>]   операции
   a:ct:<tid>           обращения             a:cg:<tid> / a:cgp:<tid>:<pkg> / a:cgok
   a:gr:<grant> / a:grok  отзыв выдачи        a:ca:<tid>              ± баланс
   a:cn:<tid> / a:cph:<tid>  имя / телефон
   a:tk                 открытые обращения    a:t:<id>                переписка
   a:tr:<id> / a:tc:<id> / a:to:<id>  ответить / закрыть / открыть снова
-  a:fin                финансы               a:fl[:<before>] / a:fa / a:fr
+  a:fin                финансы               a:fl[:<смещение>] / a:fa[:<смещение>] / a:fr
 """
 
 import logging
@@ -111,6 +111,7 @@ router = Router(name="admin_panel")
 # Подтверждение опасного действия действует столько секунд.
 CONFIRMATION_TTL_SECONDS = 600
 PAGE_SIZE = 10
+LOG_PAGE_SIZE = 7  # операции и журнал действий: по 7 записей на странице
 _ADJUSTMENT = re.compile(r"^([+-]\d{1,9})\s+(.+)$", re.DOTALL)
 SLOT_STATUS_LABELS = {
     "open": "открыто для записи",
@@ -1595,15 +1596,16 @@ async def show_client_packages(callback: CallbackQuery, repository: Any) -> None
 
 
 def _admin_operation_line(operation: Any) -> str:
+    """Операция в две строки: время, изменение и тип; ниже — детали."""
     entry = operation.entry
-    parts = [
+    head = "• {} · {} · {}".format(
         to_studio_time(entry.created_at).strftime("%d.%m %H:%M"),
         "{:+d}".format(entry.delta),
         operation.label,
-    ]
-    if entry.user_name:
-        parts.insert(1, "{} ({})".format(entry.user_name, entry.telegram_id))
+    )
     details = []
+    if entry.user_name:
+        details.append("{} ({})".format(entry.user_name, entry.telegram_id))
     if entry.class_key and entry.starts_at:
         details.append(
             "{} {}".format(
@@ -1616,41 +1618,49 @@ def _admin_operation_line(operation: Any) -> str:
         details.append("админ {}".format(entry.actor_telegram_id))
     if entry.reason:
         details.append(entry.reason)
-    line = "• " + " · ".join(parts)
-    return line + (" — " + "; ".join(details) if details else "")
+    return head + ("\n   " + "; ".join(details) if details else "")
+
+
+def _scroll_row(prefix: str, offset: int, has_more: bool) -> list:
+    """Кнопки прокрутки страниц: ``prefix:<смещение>``."""
+    row = []
+    if offset > 0:
+        row.append(
+            button("⬅️ Новее", "{}:{}".format(prefix, max(0, offset - LOG_PAGE_SIZE)))
+        )
+    if has_more:
+        row.append(button("Старее ➡️", "{}:{}".format(prefix, offset + LOG_PAGE_SIZE)))
+    return row
 
 
 async def _operations_screen(
-    repository: Any, telegram_id: Optional[int], before_id: Optional[int]
+    repository: Any, telegram_id: Optional[int], offset: int = 0
 ) -> tuple[str, InlineKeyboardMarkup]:
     operations = list(
         await HistoryService(repository).operations(
-            telegram_id, limit=PAGE_SIZE + 1, before_id=before_id
+            telegram_id, limit=LOG_PAGE_SIZE + 1, offset=offset
         )
     )
-    has_more = len(operations) > PAGE_SIZE
-    operations = operations[:PAGE_SIZE]
+    has_more = len(operations) > LOG_PAGE_SIZE
+    operations = operations[:LOG_PAGE_SIZE]
     title = (
         "Операции участника {}".format(telegram_id)
         if telegram_id
-        else "Последние операции с балансом (все участники)"
+        else "🧾 Последние операции (все участники)"
     )
+    if offset:
+        title += " · с {}-й".format(offset + 1)
     lines = [title]
     if not operations:
         lines.append("Операций нет.")
     lines.extend(_admin_operation_line(operation) for operation in operations)
     prefix = "a:co:{}".format(telegram_id) if telegram_id else "a:fl"
-    navigation = []
-    if before_id is not None:
-        navigation.append(button("⏮ К последним", prefix))
-    if has_more:
-        navigation.append(
-            button("Раньше ➡️", "{}:{}".format(prefix, operations[-1].entry.id))
-        )
     back = (
         _back_to_client(telegram_id) if telegram_id else [button("⬅️ Финансы", "a:fin")]
     )
-    return "\n".join(lines), markup(navigation, back)
+    return "\n\n".join(lines)[:4000], markup(
+        _scroll_row(prefix, offset, has_more), back
+    )
 
 
 @router.callback_query(F.data.startswith("a:co:"))
@@ -1658,10 +1668,8 @@ async def show_client_operations(callback: CallbackQuery, repository: Any) -> No
     if await _admin(callback, repository) is None:
         return
     parts = (callback.data or "").split(":")
-    before_id = parse_int(parts[3]) if len(parts) == 4 else None
-    await show(
-        callback, *await _operations_screen(repository, _tid(callback), before_id)
-    )
+    offset = (parse_int(parts[3]) or 0) if len(parts) == 4 else 0
+    await show(callback, *await _operations_screen(repository, _tid(callback), offset))
     await callback.answer()
 
 
@@ -2178,7 +2186,7 @@ def finance_screen() -> tuple[str, InlineKeyboardMarkup]:
         "(«± Баланс»). Возврат оплаты — /refund ID причина.",
         markup(
             [button("🧾 Последние операции", "a:fl")],
-            [button("🕵️ Журнал действий", "a:fa")],
+            [button("🕵️ Журнал операций", "a:fa")],
             [button("⚖️ Сверка баланса с ledger", "a:fr")],
             [button("👥 Найти участника", "a:cli")],
         ),
@@ -2208,8 +2216,8 @@ async def show_ledger(callback: CallbackQuery, repository: Any) -> None:
     if await _admin(callback, repository) is None:
         return
     parts = (callback.data or "").split(":")
-    before_id = parse_int(parts[2]) if len(parts) == 3 else None
-    await show(callback, *await _operations_screen(repository, None, before_id))
+    offset = (parse_int(parts[2]) or 0) if len(parts) == 3 else 0
+    await show(callback, *await _operations_screen(repository, None, offset))
     await callback.answer()
 
 
@@ -2224,9 +2232,15 @@ async def ledger_command(message: Message, repository: Any) -> None:
     await message.answer(text, reply_markup=reply_markup)
 
 
-async def audit_screen(repository: Any) -> tuple[str, InlineKeyboardMarkup]:
-    events = await repository.list_audit_events(limit=25)
-    lines = ["🕵️ Журнал действий (последние 25)"]
+async def audit_screen(
+    repository: Any, offset: int = 0
+) -> tuple[str, InlineKeyboardMarkup]:
+    events = list(
+        await repository.list_audit_events(limit=LOG_PAGE_SIZE + 1, offset=offset)
+    )
+    has_more = len(events) > LOG_PAGE_SIZE
+    events = events[:LOG_PAGE_SIZE]
+    lines = ["🕵️ Журнал операций" + (" · с {}-й".format(offset + 1) if offset else "")]
     if not events:
         lines.append("Записей нет.")
     for event in events:
@@ -2248,17 +2262,21 @@ async def audit_screen(repository: Any) -> tuple[str, InlineKeyboardMarkup]:
                 if event.actor_telegram_id
                 else "система",
                 AUDIT_ACTION_LABELS.get(event.action, event.action),
-                " — " + "; ".join(target) if target else "",
+                "\n   " + "; ".join(target) if target else "",
             )
         )
-    return "\n".join(lines)[:4000], markup([button("⬅️ Финансы", "a:fin")])
+    return "\n\n".join(lines)[:4000], markup(
+        _scroll_row("a:fa", offset, has_more), [button("⬅️ Финансы", "a:fin")]
+    )
 
 
-@router.callback_query(F.data == "a:fa")
+@router.callback_query(F.data.startswith("a:fa"))
 async def show_audit(callback: CallbackQuery, repository: Any) -> None:
     if await _admin(callback, repository) is None:
         return
-    await show(callback, *await audit_screen(repository))
+    parts = (callback.data or "").split(":")
+    offset = (parse_int(parts[2]) or 0) if len(parts) == 3 else 0
+    await show(callback, *await audit_screen(repository, offset))
     await callback.answer()
 
 

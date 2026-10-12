@@ -985,10 +985,14 @@ class PostgresStudioMixin:
         return [LedgerEntry.from_record(record) for record in records]
 
     async def list_audit_events(
-        self, limit: int = 30, before: Optional[datetime] = None
+        self,
+        limit: int = 30,
+        before: Optional[datetime] = None,
+        offset: int = 0,
     ) -> Sequence[AuditEvent]:
         """Журнал действий от новых к старым; ``before`` — для следующей
-        страницы (время последней показанной записи)."""
+        страницы (время последней показанной записи), ``offset`` — сколько
+        последних записей пропустить (страницы в боте)."""
         if not 1 <= limit <= 100:
             raise ValueError("Количество событий должно быть от 1 до 100")
         async with self._pool.acquire() as connection:
@@ -1033,10 +1037,11 @@ class PostgresStudioMixin:
                     ON target.telegram_id = audit.target_telegram_id
                 WHERE ($2::TIMESTAMPTZ IS NULL OR audit.created_at < $2)
                 ORDER BY audit.created_at DESC
-                LIMIT $1
+                LIMIT $1 OFFSET $3
                 """,
                 limit,
                 before,
+                offset,
             )
         return [
             AuditEvent(

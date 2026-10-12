@@ -1,4 +1,8 @@
+import asyncio
 import logging
+import os
+import platform
+import threading
 from functools import lru_cache
 import time
 import uuid
@@ -114,25 +118,49 @@ async def show_bot_status(
     if await _deny_non_admin(message, repository):
         return
     uptime_seconds = max(0, int(time.monotonic() - restart_controller.started_at))
-    hours, remainder = divmod(uptime_seconds, 3600)
+    days, remainder = divmod(uptime_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
     minutes, seconds = divmod(remainder, 60)
+    db_started = time.monotonic()
     statistics = await repository.get_user_statistics(
         datetime.now(timezone.utc) - timedelta(minutes=5)
     )
+    db_ms = (time.monotonic() - db_started) * 1000
     memory_mb, cpu_seconds = get_process_resources()
-    await message.answer(
-        "Бот работает.\nВремя работы: {} ч {} мин {} сек.\n"
-        "CPU с запуска: {:.1f} сек.\nПиковая память: {:.1f} МБ.\n"
-        "Пользователей всего: {}.\nАктивны за 5 минут: {}.".format(
-            hours,
-            minutes,
-            seconds,
-            cpu_seconds,
-            memory_mb,
-            statistics.total_users,
-            statistics.online_users,
+    started_at = datetime.now(timezone.utc) - timedelta(seconds=uptime_seconds)
+    lines = [
+        "Бот работает.",
+        "Время работы: {} ч {} мин {} сек.".format(
+            days * 24 + hours, minutes, seconds
         ),
-    )
+        "Запущен: {}.".format(format_studio_datetime(started_at)),
+        "Режим: {}.".format(
+            "приём обновлений идёт"
+            if getattr(restart_controller, "polling_started", False)
+            else "приём обновлений ещё не начат"
+        ),
+        "",
+        "CPU с запуска: {:.1f} сек.".format(cpu_seconds),
+        "Пиковая память: {:.1f} МБ.".format(memory_mb),
+        "Задач asyncio: {}.".format(len(asyncio.all_tasks())),
+        "Потоков: {}.".format(threading.active_count()),
+        "",
+        "База данных: отвечает за {:.0f} мс.".format(db_ms),
+        "Пользователей всего: {}.".format(statistics.total_users),
+        "Активны за 5 минут: {}.".format(statistics.online_users),
+        "",
+        "Python {} · {} · PID {}.".format(
+            platform.python_version(), platform.system(), os.getpid()
+        ),
+    ]
+    bot_info = None
+    try:
+        bot_info = await message.bot.get_me()
+    except Exception:
+        logger.debug("Не удалось получить данные бота для статуса", exc_info=True)
+    if bot_info is not None and getattr(bot_info, "username", None):
+        lines.append("Telegram: @{} (id {}).".format(bot_info.username, bot_info.id))
+    await message.answer("\n".join(lines))
 
 
 @router.message(F.text == MAIN_MENU)
