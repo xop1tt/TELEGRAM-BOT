@@ -15,6 +15,10 @@ callback_data (префикс ``a:``, ≤ 64 байт):
   a:sp:<id>            участники             a:sm:<id> / a:smok:<id> перенос
   a:sc:<id> / a:so:<id> закрыть / открыть    a:sx:<id> / a:sxr:<id> / a:sxok:<id>
   a:scap:<id>          вместимость                                  отмена
+  a:rp:<n> / a:tp:<tid> серия и преподаватель при создании
+  a:cw / a:cw:<0|1> / a:cwn:<0|1>:<n> / a:cwok  скопировать неделю
+  a:bk:<id> / a:bkc:<id>:<tid> / a:bkok:<id>:<tid>  записать участника
+  a:bkx:<id>:<tid> / a:bkxok:<id>:<tid>              отменить его запись
   a:cli                поиск клиента         a:c:<tid>               карточка
   a:cb:<tid>:<offset>  занятия клиента       a:cp:<tid>              абонементы
   a:cpay:<tid>         покупки               a:co:<tid>[:<before>]   операции
@@ -30,7 +34,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from aiogram import F, Router
@@ -40,7 +44,15 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from ..class_catalog import ACTIVE_CLASS_KEYS, CLASS_LABELS, CLASS_SHORT_LABELS
 from ..config import Config
-from ..database.repository import STAFF_ADMIN
+from ..database.repository import (
+    STAFF_ADMIN,
+    STAFF_TEACHER,
+    BookingCooldownError,
+    BookingNotFoundError,
+    CancellationWindowExpiredError,
+    InsufficientLessonCreditsError,
+    SlotUnavailableError,
+)
 from ..database.studio_models import (
     PackageGrantNotFoundError,
     SlotNotFoundError,
@@ -69,6 +81,7 @@ from ..presentation import (
 )
 from ..runtime.admin_access import get_admin_id, get_staff_id
 from ..services import (
+    BookingService,
     CreditService,
     HistoryService,
     PackageService,
@@ -78,6 +91,7 @@ from ..services import (
     catalog_package,
 )
 from ..services.audit import AUDIT_ACTION_LABELS
+from ..services.schedule import shift_weeks
 from ..services.history import BOOKING_STATUS_LABELS, booking_status
 from ..studio_time import format_studio_datetime, parse_admin_datetime, to_studio_time
 from .admin import (
@@ -239,7 +253,7 @@ def slot_button_text(slot: Any) -> str:
 
 
 async def schedule_screen(
-    repository: Any, viewer_id: Optional[int] = None
+    repository: Any, viewer_id: Optional[int] = None, notice: str = ""
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Расписание админки; преподаватель (``viewer_id`` с ролью teacher)
     видит только свои занятия и не создаёт новые."""
@@ -248,7 +262,8 @@ async def schedule_screen(
     slots = await ScheduleService(repository).admin_schedule(
         limit=25, teacher_telegram_id=viewer_id if is_teacher else None
     )
-    lines = [
+    lines = [notice, ""] if notice else []
+    lines += [
         "🗓 Мои занятия" if is_teacher else "🗓 Расписание занятий",
         "Нажмите на занятие: участники, перенос, отмена, закрытие записи.",
         "❌ — отменено, 🔒 — запись закрыта, ▶️ — уже идёт.",
@@ -259,12 +274,17 @@ async def schedule_screen(
         [button(slot_button_text(slot), "a:s:{}".format(slot.id))] for slot in slots
     ]
     if not is_teacher:
-        rows.append([button("➕ Создать занятие", "a:new")])
+        rows.append(
+            [
+                button("➕ Создать занятие", "a:new"),
+                button("📋 Скопировать неделю", "a:cw"),
+            ]
+        )
     return "\n".join(lines), markup(*rows)
 
 
 async def slot_card(
-    repository: Any, slot_id: int, notice: str = ""
+    repository: Any, slot_id: int, notice: str = "", is_admin: bool = False
 ) -> Optional[tuple[str, InlineKeyboardMarkup]]:
     service = ScheduleService(repository)
     slot = await service.get(slot_id)
@@ -324,13 +344,16 @@ async def slot_card(
                 button("👥 Вместимость", "a:scap:{}".format(slot.id)),
             ]
         )
+    if is_admin and slot.status == "open" and not started:
+        rows.append([button("➕ Записать участника", "a:bk:{}".format(slot.id))])
     rows.append([button("📋 Все записи и отмены", "a:sp:{}".format(slot.id))])
     rows.append([button("⬅️ К расписанию", "a:sch")])
     return "\n".join(lines), markup(*rows)
 
 
 async def _show_slot(callback: CallbackQuery, repository: Any, slot_id: int, notice=""):
-    screen = await slot_card(repository, slot_id, notice)
+    is_admin = await callback_staff_role(callback, repository) == STAFF_ADMIN
+    screen = await slot_card(repository, slot_id, notice, is_admin)
     if screen is None:
         await callback.answer("Занятие не найдено.", show_alert=True)
         return
@@ -405,15 +428,28 @@ async def show_slot_participants(callback: CallbackQuery, repository: Any) -> No
                 format_studio_datetime(participant.booked_at),
             )
         )
-    rows = [
-        [
+    slot = await ScheduleService(repository).get(slot_id)
+    can_cancel = (
+        await callback_staff_role(callback, repository) == STAFF_ADMIN
+        and slot is not None
+        and slot.starts_at > _now()
+    )
+    rows = []
+    for participant in participants[:15]:
+        row = [
             button(
                 "{} · {}".format(participant.user_name[:30], participant.telegram_id),
                 "a:c:{}".format(participant.telegram_id),
             )
         ]
-        for participant in participants[:15]
-    ]
+        if can_cancel and participant.status == "confirmed":
+            row.append(
+                button(
+                    "✖ Отменить",
+                    "a:bkx:{}:{}".format(slot_id, participant.telegram_id),
+                )
+            )
+        rows.append(row)
     rows.append([button("⬅️ К занятию", "a:s:{}".format(slot_id))])
     await show(callback, "\n".join(lines), markup(*rows))
     await callback.answer()
@@ -491,24 +527,130 @@ async def save_new_slot_capacity(message: Message, state: FSMContext, repository
         await state.clear()
         await message.answer("Не удалось продолжить — начните создание заново.")
         return
+    data["capacity"] = capacity
+    await state.update_data(new_slot=data)
+    await state.set_state(None)
+    await message.answer(
+        "Мест: {}. Повторять занятие каждую неделю?".format(capacity),
+        reply_markup=markup(
+            [button("Только это занятие", "a:rp:1")],
+            [
+                button("×{}".format(weeks), "a:rp:{}".format(weeks))
+                for weeks in (2, 3, 4)
+            ],
+            [
+                button("×{}".format(weeks), "a:rp:{}".format(weeks))
+                for weeks in (6, 8, 12)
+            ],
+            [button("Отмена", "a:sch")],
+        ),
+    )
+
+
+async def _new_slot_draft(state: FSMContext) -> Optional[dict]:
+    data = (await state.get_data()).get("new_slot") or {}
+    if (
+        data.get("class_key") not in ACTIVE_CLASS_KEYS
+        or not data.get("starts_at")
+        or not data.get("capacity")
+    ):
+        return None
+    return data
+
+
+async def _confirm_new_slot_screen(
+    callback: CallbackQuery, repository: Any, state: FSMContext, data: dict
+) -> None:
+    teacher_id = data.get("teacher_telegram_id")
+    weeks = data.get("weeks", 1)
     await _set_pending(
         state,
         action="create_slot",
         class_key=data["class_key"],
         starts_at=data["starts_at"],
-        capacity=capacity,
+        capacity=data["capacity"],
+        weeks=weeks,
+        teacher_telegram_id=teacher_id,
     )
     starts_at = datetime.fromisoformat(data["starts_at"])
-    await message.answer(
-        "Создать занятие?\n\n{}\n{}\nМест: {}".format(
-            CLASS_LABELS[data["class_key"]],
-            format_studio_datetime(starts_at),
-            capacity,
-        ),
-        reply_markup=markup(
-            [button("✅ Создать", "a:newok")], [button("Отмена", "a:sch")]
-        ),
+    lines = [
+        "Создать занятие?" if weeks == 1 else "Создать серию занятий?",
+        "",
+        CLASS_LABELS[data["class_key"]],
+        format_studio_datetime(starts_at),
+        "Мест: {}".format(data["capacity"]),
+    ]
+    if weeks > 1:
+        last = shift_weeks(to_studio_time(starts_at), weeks - 1)
+        lines.append(
+            "Каждую неделю, всего {} (последнее — {})".format(
+                weeks, format_studio_datetime(last)
+            )
+        )
+    if teacher_id:
+        teacher = await repository.get_staff_member(teacher_id)
+        lines.append(
+            "Преподаватель: {}".format(
+                teacher.public_name if teacher is not None else teacher_id
+            )
+        )
+    await show(
+        callback,
+        "\n".join(lines),
+        markup([button("✅ Создать", "a:newok")], [button("Отмена", "a:sch")]),
     )
+
+
+@router.callback_query(F.data.startswith("a:rp:"))
+async def choose_series_weeks(
+    callback: CallbackQuery, repository: Any, state: FSMContext
+) -> None:
+    if await _admin(callback, repository) is None:
+        return
+    weeks = parse_int((callback.data or "").split(":")[2])
+    data = await _new_slot_draft(state)
+    if weeks is None or not 1 <= weeks <= 12 or data is None:
+        await callback.answer("Начните создание занятия заново.", show_alert=True)
+        return
+    data["weeks"] = weeks
+    await state.update_data(new_slot=data)
+    teachers = [
+        member
+        for member in await repository.list_staff()
+        if member.role == STAFF_TEACHER
+    ]
+    if not teachers:
+        await _confirm_new_slot_screen(callback, repository, state, data)
+        await callback.answer()
+        return
+    rows = [[button("Без преподавателя", "a:tp:0")]]
+    rows.extend(
+        [button(teacher.public_name[:40], "a:tp:{}".format(teacher.telegram_id))]
+        for teacher in teachers[:20]
+    )
+    rows.append([button("Отмена", "a:sch")])
+    await show(callback, "Кто ведёт занятие?", markup(*rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("a:tp:"))
+async def choose_slot_teacher(
+    callback: CallbackQuery, repository: Any, state: FSMContext
+) -> None:
+    if await _admin(callback, repository) is None:
+        return
+    teacher_id = parse_int((callback.data or "").split(":")[2])
+    data = await _new_slot_draft(state)
+    if teacher_id is None or data is None:
+        await callback.answer("Начните создание занятия заново.", show_alert=True)
+        return
+    if teacher_id and await repository.get_staff_role(teacher_id) != STAFF_TEACHER:
+        await callback.answer("Преподаватель не найден.", show_alert=True)
+        return
+    data["teacher_telegram_id"] = teacher_id or None
+    await state.update_data(new_slot=data)
+    await _confirm_new_slot_screen(callback, repository, state, data)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "a:newok")
@@ -522,27 +664,385 @@ async def confirm_new_slot(
     if pending is None:
         await _expired(callback)
         return
+    weeks = pending.get("weeks", 1)
+    service = ScheduleService(repository)
+    starts_at = datetime.fromisoformat(pending["starts_at"])
     try:
-        slot = await ScheduleService(repository).create(
-            pending["class_key"],
-            datetime.fromisoformat(pending["starts_at"]),
-            pending["capacity"],
-            admin_id,
-        )
-    except ValueError as error:
+        if weeks > 1:
+            created, skipped = await service.create_series(
+                pending["class_key"],
+                starts_at,
+                pending["capacity"],
+                admin_id,
+                weeks,
+                teacher_telegram_id=pending.get("teacher_telegram_id"),
+            )
+        else:
+            slot = await service.create(
+                pending["class_key"],
+                starts_at,
+                pending["capacity"],
+                admin_id,
+                teacher_telegram_id=pending.get("teacher_telegram_id"),
+            )
+            created, skipped = [slot], 0
+    except (ValueError, LookupError) as error:
         await _clear_pending(state)
         await callback.answer("Не создано: {}".format(error), show_alert=True)
         return
     await _clear_pending(state)
+    await state.update_data(new_slot=None)
     actions_logger().info(
-        "action=create_class_slot admin_id=%s slot_id=%s class_key=%s capacity=%s",
+        "action=create_class_slot admin_id=%s slot_ids=%s class_key=%s "
+        "capacity=%s weeks=%s skipped=%s",
         admin_id,
-        slot.id,
-        slot.class_key,
-        slot.capacity,
+        [slot.id for slot in created],
+        pending["class_key"],
+        pending["capacity"],
+        weeks,
+        skipped,
     )
-    await _show_slot(callback, repository, slot.id, "Занятие создано ✓")
+    if weeks == 1 and created:
+        await _show_slot(callback, repository, created[0].id, "Занятие создано ✓")
+    else:
+        notice = "Создано занятий: {} ✓".format(len(created))
+        if skipped:
+            notice += " (уже были в это время: {})".format(skipped)
+        await show(callback, *await schedule_screen(repository, admin_id, notice))
     await callback.answer("Создано")
+
+
+# --- скопировать неделю ---
+
+
+def _week_monday(offset: int) -> date:
+    """Понедельник текущей (0) или следующей (1) недели по часам студии."""
+    today = to_studio_time(_now()).date()
+    return today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
+
+
+def _week_label(monday: date) -> str:
+    sunday = monday + timedelta(days=6)
+    return "{} – {}".format(monday.strftime("%d.%m"), sunday.strftime("%d.%m"))
+
+
+@router.callback_query(F.data == "a:cw")
+async def choose_copy_source_week(callback: CallbackQuery, repository: Any) -> None:
+    if await _admin(callback, repository) is None:
+        return
+    await show(
+        callback,
+        "Скопировать неделю: занятия какой недели повторить?\n"
+        "Копируются неотменённые занятия с тем же временем, вместимостью и "
+        "преподавателем; уже существующие и прошедшие пропускаются.",
+        markup(
+            [button("Эта неделя ({})".format(_week_label(_week_monday(0))), "a:cw:0")],
+            [button("Следующая ({})".format(_week_label(_week_monday(1))), "a:cw:1")],
+            [button("⬅️ К расписанию", "a:sch")],
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("a:cw:"))
+async def choose_copy_weeks(callback: CallbackQuery, repository: Any) -> None:
+    if await _admin(callback, repository) is None:
+        return
+    offset = parse_int((callback.data or "").split(":")[2])
+    if offset not in (0, 1):
+        await callback.answer("Неделя не найдена.", show_alert=True)
+        return
+    monday = _week_monday(offset)
+    counts = (1, 2, 3, 4, 8, 12)
+    await show(
+        callback,
+        "Копируем неделю {}. На сколько недель вперёд?".format(_week_label(monday)),
+        markup(
+            [
+                button("{}".format(count), "a:cwn:{}:{}".format(offset, count))
+                for count in counts[:3]
+            ],
+            [
+                button("{}".format(count), "a:cwn:{}:{}".format(offset, count))
+                for count in counts[3:]
+            ],
+            [button("⬅️ Назад", "a:cw")],
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("a:cwn:"))
+async def confirm_copy_week_screen(
+    callback: CallbackQuery, repository: Any, state: FSMContext
+) -> None:
+    if await _admin(callback, repository) is None:
+        return
+    parts = (callback.data or "").split(":")
+    offset = parse_int(parts[2]) if len(parts) > 3 else None
+    weeks = parse_int(parts[3]) if len(parts) > 3 else None
+    if offset not in (0, 1) or weeks is None or not 1 <= weeks <= 12:
+        await callback.answer("Неверные параметры.", show_alert=True)
+        return
+    monday = _week_monday(offset)
+    await _set_pending(
+        state, action="copy_week", week_start=monday.isoformat(), weeks=weeks
+    )
+    await show(
+        callback,
+        "Скопировать занятия недели {} на {} нед. вперёд?\n"
+        "Участники и записи не копируются — только расписание.".format(
+            _week_label(monday), weeks
+        ),
+        markup([button("✅ Скопировать", "a:cwok")], [button("Отмена", "a:sch")]),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "a:cwok")
+async def confirm_copy_week(
+    callback: CallbackQuery, repository: Any, state: FSMContext
+) -> None:
+    admin_id = await _admin(callback, repository)
+    if admin_id is None:
+        return
+    pending = await _take_pending(state, "copy_week")
+    if pending is None:
+        await _expired(callback)
+        return
+    try:
+        created, skipped = await ScheduleService(repository).copy_week(
+            date.fromisoformat(pending["week_start"]), pending["weeks"], admin_id
+        )
+    except (ValueError, LookupError) as error:
+        await _clear_pending(state)
+        await callback.answer("Не скопировано: {}".format(error), show_alert=True)
+        return
+    await _clear_pending(state)
+    actions_logger().info(
+        "action=copy_week admin_id=%s week_start=%s weeks=%s created=%s skipped=%s",
+        admin_id,
+        pending["week_start"],
+        pending["weeks"],
+        len(created),
+        skipped,
+    )
+    notice = "Создано занятий: {} ✓".format(len(created))
+    if skipped:
+        notice += " (пропущено — уже есть или прошли: {})".format(skipped)
+    await show(callback, *await schedule_screen(repository, admin_id, notice))
+    await callback.answer("Готово")
+
+
+# --- запись участника администратором ---
+
+
+BOOKING_ERRORS = (
+    SlotUnavailableError,
+    InsufficientLessonCreditsError,
+    BookingCooldownError,
+)
+
+
+@router.callback_query(F.data.startswith("a:bk:"))
+async def start_admin_booking(
+    callback: CallbackQuery, repository: Any, state: FSMContext
+) -> None:
+    if await _admin(callback, repository) is None:
+        return
+    slot_id = _tid(callback)
+    slot = await ScheduleService(repository).get(slot_id)
+    if slot is None or slot.status != "open" or slot.starts_at <= _now():
+        await callback.answer("На это занятие записать нельзя.", show_alert=True)
+        return
+    await state.set_state(AdminForm.waiting_for_booking_search)
+    await state.update_data(booking_slot_id=slot_id)
+    await callback.answer()
+    await callback.message.answer(
+        "Занятие №{}. Введите Telegram ID, имя или часть телефона участника.\n"
+        "С баланса спишется 1 занятие, запись — по тем же правилам, что "
+        "самозапись.".format(slot_id),
+        reply_markup=admin_input_keyboard(),
+    )
+
+
+@router.message(AdminForm.waiting_for_booking_search)
+async def search_booking_participant(
+    message: Message, state: FSMContext, repository: Any
+) -> None:
+    if await get_admin_id(message, repository) is None:
+        await state.clear()
+        return
+    query = (message.text or "").strip()
+    slot_id = (await state.get_data()).get("booking_slot_id")
+    if not slot_id:
+        await state.clear()
+        await message.answer("Не удалось продолжить — откройте занятие заново.")
+        return
+    if not query or len(query) > 100:
+        await message.answer("Введите запрос длиной от 1 до 100 символов.")
+        return
+    profiles = await repository.search_profiles(query, limit=10)
+    if not profiles:
+        await message.answer("Участники не найдены. Попробуйте другой запрос.")
+        return
+    await state.set_state(None)
+    rows = [
+        [
+            button(
+                "{} · {} · баланс {}".format(
+                    profile.user_name[:24], profile.telegram_id, profile.lesson_credits
+                ),
+                "a:bkc:{}:{}".format(slot_id, profile.telegram_id),
+            )
+        ]
+        for profile in profiles
+    ]
+    rows.append([button("⬅️ К занятию", "a:s:{}".format(slot_id))])
+    await message.answer("Кого записать?", reply_markup=markup(*rows))
+
+
+@router.callback_query(F.data.startswith("a:bkc:"))
+async def confirm_admin_booking_screen(
+    callback: CallbackQuery, repository: Any, state: FSMContext
+) -> None:
+    if await _admin(callback, repository) is None:
+        return
+    slot_id, tid = _tid(callback), _tid(callback, 3)
+    slot = await ScheduleService(repository).get(slot_id)
+    profile = await repository.get_profile(tid)
+    if slot is None or profile is None:
+        await callback.answer("Занятие или участник не найдены.", show_alert=True)
+        return
+    await _set_pending(state, action="admin_book", slot_id=slot_id, telegram_id=tid)
+    await show(
+        callback,
+        "Записать участника?\n\n{} (ID {})\nБаланс: {}\n\n{}\n{}\n"
+        "Спишется 1 занятие, участник получит уведомление.".format(
+            profile.user_name,
+            tid,
+            lessons_count(profile.lesson_credits),
+            CLASS_LABELS[slot.class_key],
+            format_studio_datetime(slot.starts_at),
+        ),
+        markup(
+            [button("✅ Записать", "a:bkok:{}:{}".format(slot_id, tid))],
+            [button("Отмена", "a:s:{}".format(slot_id))],
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("a:bkok:"))
+async def confirm_admin_booking(
+    callback: CallbackQuery, repository: Any, state: FSMContext
+) -> None:
+    admin_id = await _admin(callback, repository)
+    if admin_id is None:
+        return
+    slot_id, tid = _tid(callback), _tid(callback, 3)
+    if (
+        await _take_pending(state, "admin_book", slot_id=slot_id, telegram_id=tid)
+        is None
+    ):
+        await _expired(callback)
+        return
+    try:
+        booking = await BookingService(repository, None).admin_book(
+            slot_id, tid, admin_id
+        )
+    except BOOKING_ERRORS as error:
+        await _clear_pending(state)
+        await callback.answer("Не записано: {}".format(error), show_alert=True)
+        return
+    await _clear_pending(state)
+    actions_logger().info(
+        "action=admin_book admin_id=%s slot_id=%s telegram_id=%s duplicate=%s",
+        admin_id,
+        slot_id,
+        tid,
+        booking.already_booked,
+    )
+    await _show_slot(
+        callback,
+        repository,
+        slot_id,
+        "Участник уже был записан" if booking.already_booked else "Участник записан ✓",
+    )
+    await callback.answer("Готово")
+
+
+@router.callback_query(F.data.startswith("a:bkx:"))
+async def confirm_admin_cancel_screen(
+    callback: CallbackQuery, repository: Any, state: FSMContext
+) -> None:
+    if await _admin(callback, repository) is None:
+        return
+    slot_id, tid = _tid(callback), _tid(callback, 3)
+    slot = await ScheduleService(repository).get(slot_id)
+    profile = await repository.get_profile(tid)
+    if slot is None or profile is None or slot.starts_at <= _now():
+        await callback.answer("Эту запись отменить нельзя.", show_alert=True)
+        return
+    await _set_pending(state, action="admin_cancel", slot_id=slot_id, telegram_id=tid)
+    await show(
+        callback,
+        "Отменить запись участника?\n\n{} (ID {})\n{}\n{}\n"
+        "Занятие вернётся на баланс даже позже окна отмены, участник получит "
+        "уведомление.".format(
+            profile.user_name,
+            tid,
+            CLASS_LABELS[slot.class_key],
+            format_studio_datetime(slot.starts_at),
+        ),
+        markup(
+            [button("✅ Отменить запись", "a:bkxok:{}:{}".format(slot_id, tid))],
+            [button("Назад", "a:sp:{}".format(slot_id))],
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("a:bkxok:"))
+async def confirm_admin_cancel(
+    callback: CallbackQuery, repository: Any, state: FSMContext
+) -> None:
+    admin_id = await _admin(callback, repository)
+    if admin_id is None:
+        return
+    slot_id, tid = _tid(callback), _tid(callback, 3)
+    if (
+        await _take_pending(state, "admin_cancel", slot_id=slot_id, telegram_id=tid)
+        is None
+    ):
+        await _expired(callback)
+        return
+    try:
+        cancelled = await BookingService(repository, None).admin_cancel(
+            slot_id, tid, admin_id
+        )
+    except (BookingNotFoundError, CancellationWindowExpiredError) as error:
+        await _clear_pending(state)
+        await callback.answer("Не отменено: {}".format(error), show_alert=True)
+        return
+    await _clear_pending(state)
+    actions_logger().info(
+        "action=admin_cancel_booking admin_id=%s slot_id=%s telegram_id=%s "
+        "cancelled=%s",
+        admin_id,
+        slot_id,
+        tid,
+        cancelled,
+    )
+    await _show_slot(
+        callback,
+        repository,
+        slot_id,
+        "Запись отменена, занятие вернулось на баланс ✓"
+        if cancelled
+        else "Запись уже была отменена",
+    )
+    await callback.answer("Готово")
 
 
 # --- перенос ---

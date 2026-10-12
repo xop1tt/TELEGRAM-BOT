@@ -15,7 +15,14 @@ from unittest.mock import AsyncMock, patch
 from flamenco_bot.handlers import admin_panel
 from flamenco_bot.handlers.states import AdminForm
 from flamenco_bot.studio_time import to_studio_time
-from tests.pg import PostgresTestCase, fetchval, make_admin, set_credits
+from flamenco_bot.config import Config
+from tests.pg import (
+    PostgresTestCase,
+    fetch_all,
+    fetchval,
+    make_admin,
+    set_credits,
+)
 from tests.support import FakeCallback, FakeMessage, FakeState, callback_data
 
 ADMIN_ID = 77
@@ -289,7 +296,10 @@ class AdminPanelTests(PostgresTestCase):
         )
         capacity = FakeMessage(text="8", telegram_id=ADMIN_ID)
         await admin_panel.save_new_slot_capacity(capacity, self.state, self.repository)
-        self.assertIn("Создать занятие?", capacity.last_answer.args[0])
+        self.assertIn("Повторять", capacity.last_answer.args[0])
+        series = self.press("a:rp:1")
+        await admin_panel.choose_series_weeks(series, self.repository, self.state)
+        self.assertIn("Создать занятие?", series.screen[0])
 
         confirm = self.press("a:newok")
         await admin_panel.confirm_new_slot(confirm, self.repository, self.state)
@@ -299,6 +309,203 @@ class AdminPanelTests(PostgresTestCase):
             await fetchval(self.repository, "SELECT MAX(id) FROM lesson_slots")
         )
         self.assertEqual((created.class_key, created.capacity), ("intermediate", 8))
+
+    async def _draft_slot(self, capacity="6", days=4):
+        await admin_panel.start_new_slot(
+            self.press("a:new:beginner"), self.repository, self.state
+        )
+        when = to_studio_time(datetime.now(timezone.utc) + timedelta(days=days))
+        await admin_panel.save_new_slot_time(
+            FakeMessage(text=when.strftime("%d.%m.%Y 19:00"), telegram_id=ADMIN_ID),
+            self.state,
+            self.repository,
+        )
+        await admin_panel.save_new_slot_capacity(
+            FakeMessage(text=capacity, telegram_id=ADMIN_ID),
+            self.state,
+            self.repository,
+        )
+
+    async def test_create_weekly_series_with_teacher(self):
+        await self._teacher()
+        await self._draft_slot()
+        weeks = self.press("a:rp:3")
+        await admin_panel.choose_series_weeks(weeks, self.repository, self.state)
+        self.assertIn("Кто ведёт", weeks.screen[0])
+        self.assertIn("a:tp:{}".format(TEACHER_ID), callback_data(weeks.screen[1]))
+
+        teacher = self.press("a:tp:{}".format(TEACHER_ID))
+        await admin_panel.choose_slot_teacher(teacher, self.repository, self.state)
+        self.assertIn("Создать серию занятий?", teacher.screen[0])
+        self.assertIn("всего 3", teacher.screen[0])
+        self.assertIn("Мария", teacher.screen[0])
+
+        confirm = self.press("a:newok")
+        await admin_panel.confirm_new_slot(confirm, self.repository, self.state)
+        self.assertIn("Создано занятий: 3", confirm.screen[0])
+        rows = await fetch_all(
+            self.repository,
+            "SELECT teacher_telegram_id, starts_at FROM lesson_slots "
+            "ORDER BY starts_at",
+        )
+        self.assertEqual([row["teacher_telegram_id"] for row in rows], [TEACHER_ID] * 3)
+        gaps = {
+            (rows[i + 1]["starts_at"] - rows[i]["starts_at"]).days for i in range(2)
+        }
+        self.assertEqual(gaps, {7})
+
+    async def test_series_skips_existing_slot_and_reports_it(self):
+        await self._draft_slot(days=4)
+        await admin_panel.choose_series_weeks(
+            self.press("a:rp:2"), self.repository, self.state
+        )
+        await admin_panel.confirm_new_slot(
+            self.press("a:newok"), self.repository, self.state
+        )
+        # Та же серия ещё раз: оба занятия уже есть в это время.
+        await self._draft_slot(days=4)
+        await admin_panel.choose_series_weeks(
+            self.press("a:rp:2"), self.repository, self.state
+        )
+        repeat = self.press("a:newok")
+        await admin_panel.confirm_new_slot(repeat, self.repository, self.state)
+        self.assertIn("Создано занятий: 0", repeat.screen[0])
+        self.assertIn("уже были в это время: 2", repeat.screen[0])
+
+    async def test_series_choice_without_draft_is_rejected(self):
+        callback = self.press("a:rp:4")
+        await admin_panel.choose_series_weeks(callback, self.repository, self.state)
+        callback.answer.assert_awaited_with(
+            "Начните создание занятия заново.", show_alert=True
+        )
+
+    async def test_copy_week_flow(self):
+        next_monday = admin_panel._week_monday(1)
+        source = datetime.combine(
+            next_monday + timedelta(days=2),
+            datetime.min.time().replace(hour=19),
+            tzinfo=Config.STUDIO_TIMEZONE,
+        )
+        await self.repository.create_class_slot("beginner", source, 7, ADMIN_ID)
+
+        weeks = self.press("a:cw:1")
+        await admin_panel.choose_copy_weeks(weeks, self.repository)
+        self.assertIn("a:cwn:1:2", callback_data(weeks.screen[1]))
+        screen = self.press("a:cwn:1:2")
+        await admin_panel.confirm_copy_week_screen(screen, self.repository, self.state)
+        self.assertIn("Скопировать занятия недели", screen.screen[0])
+
+        confirm = self.press("a:cwok")
+        await admin_panel.confirm_copy_week(confirm, self.repository, self.state)
+        self.assertIn("Создано занятий: 2", confirm.screen[0])
+        self.assertEqual(
+            await fetchval(self.repository, "SELECT COUNT(*) FROM lesson_slots"), 3
+        )
+
+        again = self.press("a:cwn:1:2")
+        await admin_panel.confirm_copy_week_screen(again, self.repository, self.state)
+        repeat = self.press("a:cwok")
+        await admin_panel.confirm_copy_week(repeat, self.repository, self.state)
+        self.assertIn("Создано занятий: 0", repeat.screen[0])
+        self.assertEqual(
+            await fetchval(self.repository, "SELECT COUNT(*) FROM lesson_slots"), 3
+        )
+
+    async def test_copy_week_without_slots_shows_error(self):
+        screen = self.press("a:cwn:0:1")
+        await admin_panel.confirm_copy_week_screen(screen, self.repository, self.state)
+        confirm = self.press("a:cwok")
+        await admin_panel.confirm_copy_week(confirm, self.repository, self.state)
+        self.assertIn("нет занятий", confirm.answer.await_args.args[0])
+        self.assertTrue(confirm.answer.await_args.kwargs["show_alert"])
+
+    async def test_copy_week_requires_confirmation(self):
+        confirm = self.press("a:cwok")
+        await admin_panel.confirm_copy_week(confirm, self.repository, self.state)
+        self.assertIn("устарело", confirm.answer.await_args.args[0])
+
+    async def test_admin_books_and_cancels_participant(self):
+        slot = await self._slot()
+        profile = await self.repository.get_or_create_profile(USER_ID, "Анна")
+        await set_credits(self.repository, USER_ID, 2)
+
+        card = self.press("a:s:{}".format(slot.id))
+        await admin_panel.show_slot(card, self.repository)
+        self.assertIn("a:bk:{}".format(slot.id), callback_data(card.screen[1]))
+
+        start = self.press("a:bk:{}".format(slot.id))
+        await admin_panel.start_admin_booking(start, self.repository, self.state)
+        search = FakeMessage(text="Анна", telegram_id=ADMIN_ID)
+        await admin_panel.search_booking_participant(
+            search, self.state, self.repository
+        )
+        found = callback_data(search.last_answer.kwargs["reply_markup"])
+        self.assertIn("a:bkc:{}:{}".format(slot.id, profile.telegram_id), found)
+
+        pick = self.press("a:bkc:{}:{}".format(slot.id, USER_ID))
+        await admin_panel.confirm_admin_booking_screen(
+            pick, self.repository, self.state
+        )
+        self.assertIn("Записать участника?", pick.screen[0])
+        confirm = self.press("a:bkok:{}:{}".format(slot.id, USER_ID))
+        await admin_panel.confirm_admin_booking(confirm, self.repository, self.state)
+        self.assertIn("Участник записан", confirm.screen[0])
+        self.assertEqual(await self.repository.get_lesson_credits(USER_ID), 1)
+        kinds = [n.kind for n in await self.repository.list_notifications(USER_ID)]
+        self.assertIn("booking_confirmed", kinds)
+
+        participants = self.press("a:sp:{}".format(slot.id))
+        await admin_panel.show_slot_participants(participants, self.repository)
+        self.assertIn(
+            "a:bkx:{}:{}".format(slot.id, USER_ID),
+            callback_data(participants.screen[1]),
+        )
+        ask = self.press("a:bkx:{}:{}".format(slot.id, USER_ID))
+        await admin_panel.confirm_admin_cancel_screen(ask, self.repository, self.state)
+        self.assertIn("Отменить запись участника?", ask.screen[0])
+        cancel = self.press("a:bkxok:{}:{}".format(slot.id, USER_ID))
+        await admin_panel.confirm_admin_cancel(cancel, self.repository, self.state)
+        self.assertIn("Запись отменена", cancel.screen[0])
+        self.assertEqual(await self.repository.get_lesson_credits(USER_ID), 2)
+
+    async def test_admin_booking_without_credits_is_refused(self):
+        slot = await self._slot()
+        pick = self.press("a:bkc:{}:{}".format(slot.id, USER_ID))
+        await admin_panel.confirm_admin_booking_screen(
+            pick, self.repository, self.state
+        )
+        confirm = self.press("a:bkok:{}:{}".format(slot.id, USER_ID))
+        await admin_panel.confirm_admin_booking(confirm, self.repository, self.state)
+        self.assertIn("Не записано", confirm.answer.await_args.args[0])
+        self.assertEqual(
+            await fetchval(self.repository, "SELECT COUNT(*) FROM lesson_bookings"), 0
+        )
+
+    async def test_booking_for_participant_is_admin_only(self):
+        await self._teacher()
+        own = await self.repository.create_class_slot(
+            "beginner",
+            datetime.now(timezone.utc) + timedelta(days=2),
+            5,
+            ADMIN_ID,
+            teacher_telegram_id=TEACHER_ID,
+        )
+        card = self.press("a:s:{}".format(own.id), telegram_id=TEACHER_ID)
+        await admin_panel.show_slot(card, self.repository)
+        self.assertNotIn("a:bk:{}".format(own.id), callback_data(card.screen[1]))
+        for handler, data in (
+            (admin_panel.start_admin_booking, "a:bk:{}".format(own.id)),
+            (admin_panel.confirm_admin_booking_screen, "a:bkc:{}:1".format(own.id)),
+            (admin_panel.confirm_admin_booking, "a:bkok:{}:1".format(own.id)),
+            (admin_panel.confirm_admin_cancel, "a:bkxok:{}:1".format(own.id)),
+        ):
+            with self.subTest(data=data):
+                callback = self.press(data, telegram_id=TEACHER_ID)
+                if handler is admin_panel.confirm_admin_booking_screen:
+                    await handler(callback, self.repository, self.state)
+                else:
+                    await handler(callback, self.repository, self.state)
+                self.assertTrue(callback.answer.await_args.kwargs["show_alert"])
 
     async def test_close_and_reopen(self):
         slot = await self._slot()

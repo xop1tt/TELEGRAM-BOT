@@ -33,7 +33,7 @@ ADMIN_SCHEDULE_LOOKBACK = timedelta(hours=12)
 MAX_SERIES_WEEKS = 12
 
 
-def _shift_weeks(local: datetime, weeks: int) -> datetime:
+def shift_weeks(local: datetime, weeks: int) -> datetime:
     """То же время по часам студии через ``weeks`` недель (с учётом смены
     летнего времени)."""
     naive = local.replace(tzinfo=None) + timedelta(weeks=weeks)
@@ -99,7 +99,7 @@ class ScheduleService:
         items = [
             (
                 class_key,
-                _shift_weeks(local, week),
+                shift_weeks(local, week),
                 capacity,
                 teacher_telegram_id,
             )
@@ -138,7 +138,7 @@ class ScheduleService:
         past = 0
         for week in range(1, weeks + 1):
             for slot in source:
-                moved = _shift_weeks(to_studio_time(slot.starts_at), week)
+                moved = shift_weeks(to_studio_time(slot.starts_at), week)
                 if moved <= now:
                     past += 1
                     continue

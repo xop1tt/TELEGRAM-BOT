@@ -33,3 +33,4 @@ class AdminForm(StatesGroup):
     waiting_for_revoke_reason = State()
     waiting_for_support_reply = State()
     waiting_for_client_adjustment = State()
+    waiting_for_booking_search = State()
