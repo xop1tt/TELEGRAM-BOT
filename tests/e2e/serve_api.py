@@ -102,7 +102,7 @@ async def main(port: int) -> None:
     actual = server.servers[0].sockets[0].getsockname()[1]
     info = {
         "port": actual,
-        "password": PASSWORD,
+        "password": None,
         "user_id": USER_ID,
         "other_id": OTHER_ID,
         "admin_id": ADMIN_ID,
